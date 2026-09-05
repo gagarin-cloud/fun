@@ -39,11 +39,13 @@ jobs:
       - name: Log in to the gagarin registry
         run: gg registry login
 
+      # api already declares it reaches pg, and that declaration is what hands
+      # it the database credentials: gagarin unions PG_URL and the rest into the
+      # pod every time it renders one. The edge is standing state a deploy can
+      # neither add to nor take away, so there is nothing to restate here — and
+      # nothing to copy, which is why no db.env is written and then deleted.
       - name: Ship the api
-        run: |
-          gg resource secrets "$PROJECT/pg" > db.env
-          gg ship "$PROJECT/api:4000" --context ./feed/api --env-file db.env --env PORT=4000
-          rm -f db.env
+        run: gg ship "$PROJECT/api:4000" --context ./feed/api --env PORT=4000
 
       - name: Ship the web
         run: gg ship "$PROJECT/web:8080" --context ./feed/web

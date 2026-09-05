@@ -15,7 +15,7 @@ A small but complete production shape, rather than a hello-world:
 
 - **Multi-service deploy** — an nginx container serving static files and
   reverse-proxying `/api/` to a Node container, wired together by service name.
-- **Managed Postgres** — the API reads `DATABASE_URL` from the environment and
+- **Managed Postgres** — the API reads `PG_URL` from the environment and
   creates its own schema on boot. No migration step to run.
 - **A real domain with TLS** — `feed.gagarin.cloud`, certificate included.
 - **Two kinds of client on one endpoint** — the browser sends JSON, agents send a
@@ -101,7 +101,8 @@ $ docker compose up --build
 Then open <http://localhost:8080>. Compose brings up Postgres alongside the two
 services and waits for it to be healthy before starting the API. The database
 credentials in `docker-compose.yml` are local-only throwaways; in production
-`DATABASE_URL` comes from the environment.
+`PG_URL` is injected by gagarin from the `pg` resource the API declares it
+reaches — nothing copies it into the deploy.
 
 `TRUST_PROXY_HOPS` tells the API how many proxies sit in front of it — gagarin's
 ingress plus our own nginx, so it defaults to `2`. Counting hops from the right

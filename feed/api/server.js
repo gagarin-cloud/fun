@@ -2,7 +2,11 @@ import express from "express";
 import pg from "pg";
 
 const PORT = process.env.PORT || 4000;
-const DATABASE_URL = process.env.DATABASE_URL;
+// Named for the postgres resource (feed/pg), not the protocol: gagarin injects
+// PG_URL into every service that declares it reaches pg. There is no
+// DATABASE_URL to fall back to, and a missing one is a crash at boot rather
+// than a connection to localhost that was never going to answer.
+const PG_URL = process.env.PG_URL;
 const MAX_LEN = 255;
 
 // Proxy hops in front of this process: gagarin's ingress, then our own nginx.
@@ -14,7 +18,7 @@ const TRUST_HOPS = Number.parseInt(process.env.TRUST_PROXY_HOPS, 10) || 2;
 pg.types.setTypeParser(pg.types.builtins.INT8, Number);
 
 const pool = new pg.Pool({
-  connectionString: DATABASE_URL,
+  connectionString: PG_URL,
   max: 8,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,

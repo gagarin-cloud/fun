@@ -9,7 +9,7 @@ services:
   api:
     build: ./api
     environment:
-      - DATABASE_URL=postgres://gagarin:gagarin@db:5432/gagarin
+      - PG_URL=postgres://gagarin:gagarin@db:5432/gagarin
       - PORT=4000
     depends_on:
       db:
