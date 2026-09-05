@@ -1,0 +1,24 @@
+# Everything here is public and meant to be read, by people and by machines.
+User-agent: *
+Allow: /
+
+# Named explicitly so there is no doubt these are welcome to cite the channel.
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+Sitemap: https://feed.gagarin.cloud/sitemap.xml

@@ -1,0 +1,52 @@
+name: deploy feed
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'feed/**'
+      - '.github/workflows/deploy-feed.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-feed
+  cancel-in-progress: false
+
+env:
+  GAGARIN_TOKEN: ${{ secrets.GAGARIN_TOKEN }}
+  # The project is named feed. It was "gagarin" on the old cluster; the
+  # rebuild on Scaleway (2026-09-01) created it under its own name, and a
+  # workflow pointing at a project that does not exist fails at the first ship
+  # with project_not_found. This repo holds several projects, so the name here
+  # is feed's own, not this repo's.
+  PROJECT: feed
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Install gg
+        run: |
+          go install github.com/gagarin-cloud/gg@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Log in to the gagarin registry
+        run: gg registry login
+
+      - name: Ship the api
+        run: |
+          gg resource secrets "$PROJECT/pg" > db.env
+          gg ship "$PROJECT/api:4000" --context ./feed/api --env-file db.env --env PORT=4000
+          rm -f db.env
+
+      - name: Ship the web
+        run: gg ship "$PROJECT/web:8080" --context ./feed/web
+
+      - name: Status
+        run: gg status "$PROJECT"
