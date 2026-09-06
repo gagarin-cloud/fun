@@ -23,6 +23,9 @@ env:
 
 jobs:
   deploy:
+    # This workflow is just an example — disabled so it never actually runs,
+    # even via workflow_dispatch or a push touching feed/**.
+    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
