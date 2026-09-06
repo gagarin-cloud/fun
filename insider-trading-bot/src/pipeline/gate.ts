@@ -20,9 +20,11 @@ export interface GateDeps {
  * about restraint: the model will happily produce a dozen 7s on a busy news day,
  * and a channel that posts a dozen ideas a day carries no signal at all.
  *
- * Pure function of (input, repo state, clock) so it is fully unit-testable.
+ * A pure function of (input, repo state, clock) so it is fully unit-testable —
+ * async only because the repo reads are now round trips. The checks stay ordered
+ * cheapest-first, so the free conviction test still short-circuits the queries.
  */
-export function checkGate(input: GateInput, deps: GateDeps): GateDecision {
+export async function checkGate(input: GateInput, deps: GateDeps): Promise<GateDecision> {
   const { repo, config, now } = deps
 
   if (input.conviction < config.MIN_CONVICTION) {
@@ -34,11 +36,11 @@ export function checkGate(input: GateInput, deps: GateDeps): GateDecision {
 
   // Never stack two live calls on the same ticker in the same direction — that is
   // one idea, posted twice, and it double-counts in the scorecard.
-  if (repo.hasOpenCall(input.ticker, input.direction)) {
+  if (await repo.hasOpenCall(input.ticker, input.direction)) {
     return { ok: false, reason: `an open ${input.direction} call on ${input.ticker} already exists` }
   }
 
-  const last = repo.lastPostedAt(input.ticker)
+  const last = await repo.lastPostedAt(input.ticker)
   if (last) {
     const elapsedH = (now.getTime() - Date.parse(last)) / 3_600_000
     if (Number.isFinite(elapsedH) && elapsedH < config.TICKER_COOLDOWN_HOURS) {
@@ -52,7 +54,7 @@ export function checkGate(input: GateInput, deps: GateDeps): GateDecision {
   // Rolling 24h rather than calendar-day, so the cap can't be sidestepped by
   // posting three at 23:50 and three more at 00:10.
   const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()
-  const recent = repo.countCallsSince(dayAgo)
+  const recent = await repo.countCallsSince(dayAgo)
   if (recent >= config.MAX_POSTS_PER_DAY) {
     return {
       ok: false,

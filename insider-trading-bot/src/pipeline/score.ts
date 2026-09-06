@@ -46,14 +46,14 @@ export async function runScoring(opts: { postRecap?: boolean } = {}): Promise<Sc
   const now = new Date()
   const today = now.toISOString().slice(0, 10)
 
-  const due = repo.openCallsDueBy(today)
+  const due = await repo.openCallsDueBy(today)
   const result: ScoreResult = { due: due.length, resolved: 0, unscoreable: 0, posted: false }
 
   for (const call of due) {
     if (call.entry_price == null || call.entry_price <= 0) {
       // No entry snapshot means it can never be scored. Retire it rather than
       // leaving it to be re-examined every week forever.
-      repo.resolveCall(call.id, 'expired', 0, 0, now.toISOString())
+      await repo.resolveCall(call.id, 'expired', 0, 0, now.toISOString())
       result.unscoreable++
       logger.warn({ id: call.id, ticker: call.ticker }, 'call has no entry price — retiring')
       continue
@@ -69,7 +69,7 @@ export async function runScoring(opts: { postRecap?: boolean } = {}): Promise<Sc
 
     const signed = returnPct(call.direction, call.entry_price, quote.price)
     const status = classify(signed)
-    repo.resolveCall(call.id, status, quote.price, signed, now.toISOString())
+    await repo.resolveCall(call.id, status, quote.price, signed, now.toISOString())
     result.resolved++
     logger.info(
       { ticker: call.ticker, status, returnPct: signed.toFixed(1) },
@@ -79,8 +79,8 @@ export async function runScoring(opts: { postRecap?: boolean } = {}): Promise<Sc
 
   if (opts.postRecap !== false) {
     const weekAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString()
-    const resolved = repo.resolvedSince(weekAgo)
-    const stillOpen = repo.countOpenCalls()
+    const resolved = await repo.resolvedSince(weekAgo)
+    const stillOpen = await repo.countOpenCalls()
     const label = `week to ${today}`
     const messageId = await postMessage(formatRecap(resolved, stillOpen, label))
     result.posted = messageId !== null

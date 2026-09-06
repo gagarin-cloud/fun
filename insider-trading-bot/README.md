@@ -114,12 +114,17 @@ without it — but nothing in the channel states a level.
 ```bash
 cp .env.example .env    # then fill it in
 npm install
-npm run migrate
+docker compose up -d db # a Postgres to develop against, on host port 5433
+npm run migrate         # apply the schema
 ```
 
-The six credentials at the top of `.env.example` are required; everything below
-them has a default in `src/config.ts`. Two easy-to-miss ones:
+The seven required values are the six credentials at the top of `.env.example`
+plus `DB_URL`; everything below them has a default in `src/config.ts`. Three
+easy-to-miss ones:
 
+- `DB_URL` has **no default**, on purpose. A worker that guessed its way to the
+  wrong database would run perfectly and write its call history somewhere nobody
+  reads, so a missing one is a crash at boot instead.
 - `SEC_USER_AGENT` must be a real contact string (`"insider-bot you@example.com"`).
   EDGAR returns 403 without it and will eventually block the IP.
 - The Telegram bot must be added to the channel **as an admin with Post Messages**,
@@ -166,23 +171,26 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-The database is a host bind mount at `./data/insider.sqlite` — open it directly in
-a local SQLite browser to inspect calls and tune prompts. It survives
-`docker compose down -v`.
+Compose brings up a Postgres 17 alongside the worker and points `DB_URL` at it.
+Port 5432 is published on the host as **5433**, to stay clear of a Postgres you
+may already be running, so you can inspect calls and tune prompts with:
+
+```bash
+psql postgres://insider:insider@localhost:5433/insider
+```
 
 Two operational notes:
 
-- No `chown` needed on `./data`. `docker-entrypoint.sh` runs as root only long
-  enough to fix ownership of the mount, then drops to the unprivileged `node` user
-  via `setpriv` before starting the app. This matters because mounting storage over
-  a path replaces the image's ownership of it — getting this wrong produced a
-  `SQLITE_CANTOPEN` crash-loop on Railway, and the same trap applies to bind mounts.
-- `./data` must be on a real local filesystem. SQLite in WAL mode will corrupt or
-  lock on a network share.
+- The container runs unprivileged as `node` and writes nothing it needs to keep —
+  all state is in Postgres. There is no volume to mount, nothing to `chown`, and
+  no entrypoint shim.
+- Compose stores the data in a **named volume**, which `docker compose down -v`
+  deletes. Dump first if you care about the call history:
+  `docker compose exec db pg_dump -U insider insider > insider.sql`.
 
 `TZ=UTC` is pinned in compose so the cron schedules mean the same thing on any
-host. SIGTERM drains the in-flight cycle and checkpoints the WAL before exit, so
-`docker compose restart` is safe mid-write.
+host. SIGTERM stops the schedules, drains the in-flight cycle and then closes the
+connection pool, so `docker compose restart` is safe mid-cycle.
 
 At the default 3-hour interval the worker makes ~8 Marketaux calls/day against a
 100/day free tier, so there is plenty of headroom under `INGEST_CRON`.
@@ -192,7 +200,7 @@ At the default 3-hour interval the worker makes ~8 Marketaux calls/day against a
 **Do not hand-roll API clients where an official, well-supported SDK exists.**
 OpenAI → `openai` (Responses API + strict structured outputs, so there is no
 output parsing anywhere). Telegram → `grammy`. Finnhub → `finnhub`. RSS/Atom →
-`rss-parser`. SQLite → `better-sqlite3`.
+`rss-parser`. Postgres → `pg`.
 
 Exactly two modules talk raw HTTP, because no Node client exists for either:
 `src/sources/marketaux.ts` and `src/sources/edgar.ts`. Both say so at the top. If

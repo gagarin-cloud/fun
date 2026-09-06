@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { esc, truncate, formatSuggestion, formatRecap } from './format.js'
+import { esc, truncate, formatSuggestion, formatRecap, formatDeployNotice } from './format.js'
 import type { Thesis } from '../llm/thesis.js'
 import type { CallRow } from '../db/repo.js'
 
@@ -155,5 +155,36 @@ describe('formatRecap', () => {
     )
     expect(out).toContain('A&amp;B')
     expect(out).toContain('C&lt;D')
+  })
+})
+
+describe('formatDeployNotice', () => {
+  const base = {
+    commit: null,
+    freshDatabase: false,
+    seenEvents: 412,
+    openCalls: 3,
+    dryRun: false,
+  }
+
+  it('reports the row counts when the database already had a schema', () => {
+    const out = formatDeployNotice(base)
+    expect(out).toContain('storage ok')
+    expect(out).toContain('412 events seen')
+    expect(out).toContain('3 open calls')
+  })
+
+  it('flags a database that had no schema before this boot', () => {
+    const out = formatDeployNotice({ ...base, freshDatabase: true })
+    expect(out).toContain('fresh database')
+    // The counts are zero and meaningless here; saying "storage ok" alongside
+    // them would read as confirmation that the history survived.
+    expect(out).not.toContain('storage ok')
+  })
+
+  it('includes a short commit and the dry-run marker', () => {
+    const out = formatDeployNotice({ ...base, commit: 'abcdef1234567890', dryRun: true })
+    expect(out).toContain('<code>abcdef1</code>')
+    expect(out).toContain('dry run')
   })
 })

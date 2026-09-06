@@ -1,12 +1,15 @@
-import type { Database } from 'better-sqlite3'
+import type { Pool } from 'pg'
 
 /**
  * Idempotent schema setup. Every statement is CREATE ... IF NOT EXISTS, so this
  * runs unconditionally on every boot. Additive changes can just be appended;
  * anything destructive needs a real migration and a bump here.
+ *
+ * Sent as one multi-statement simple query, which Postgres wraps in an implicit
+ * transaction — so a schema that half-applies is not a state this can reach.
  */
-export function migrate(db: Database): void {
-  db.exec(`
+export async function migrate(db: Pool): Promise<void> {
+  await db.query(`
     -- The dedupe spine. The same story reaches us via RSS, Marketaux and EDGAR
     -- within minutes of each other, so every event is recorded here (whether or
     -- not it survives triage) and re-seen ids are skipped.
@@ -16,9 +19,11 @@ export function migrate(db: Database): void {
       url             TEXT,
       headline        TEXT NOT NULL,
       ticker          TEXT,
-      published_at    TEXT,
-      first_seen_at   TEXT NOT NULL,
-      triage_verdict  TEXT,        -- 'pass' | 'reject' | NULL (not yet triaged)
+      published_at    TIMESTAMPTZ,
+      first_seen_at   TIMESTAMPTZ NOT NULL,
+      -- NULL until triaged; CHECK permits NULL, so the third state needs no
+      -- sentinel value.
+      triage_verdict  TEXT CHECK (triage_verdict IN ('pass', 'reject')),
       triage_reason   TEXT,
       event_type      TEXT
     );
@@ -31,7 +36,7 @@ export function migrate(db: Database): void {
     -- One row per published suggestion. entry_price is recorded for internal
     -- scoring only; it is deliberately never rendered into the channel post.
     CREATE TABLE IF NOT EXISTS calls (
-      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      id                 BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
       ticker             TEXT NOT NULL,
       company            TEXT,
       direction          TEXT NOT NULL CHECK (direction IN ('long', 'short')),
@@ -39,18 +44,20 @@ export function migrate(db: Database): void {
       thesis             TEXT NOT NULL,
       second_order_chain TEXT,
       catalyst           TEXT,
-      catalyst_by        TEXT,
+      -- A real DATE: the scoring job compares it against today, and the thesis
+      -- stage already clamps it to a YYYY-MM-DD inside a 1-3 month window.
+      catalyst_by        DATE,
       key_risk           TEXT,
       event_id           TEXT,
       source_url         TEXT,
-      entry_price        REAL,
-      entry_at           TEXT NOT NULL,
-      posted_message_id  INTEGER,
+      entry_price        DOUBLE PRECISION,
+      entry_at           TIMESTAMPTZ NOT NULL,
+      posted_message_id  BIGINT,
       status             TEXT NOT NULL DEFAULT 'open'
                          CHECK (status IN ('open', 'won', 'lost', 'expired')),
-      resolved_at        TEXT,
-      resolved_price     REAL,
-      return_pct         REAL
+      resolved_at        TIMESTAMPTZ,
+      resolved_price     DOUBLE PRECISION,
+      return_pct         DOUBLE PRECISION
     );
 
     CREATE INDEX IF NOT EXISTS idx_calls_status ON calls (status);
@@ -59,7 +66,7 @@ export function migrate(db: Database): void {
 
     CREATE TABLE IF NOT EXISTS ticker_cooldown (
       ticker          TEXT PRIMARY KEY,
-      last_posted_at  TEXT NOT NULL
+      last_posted_at  TIMESTAMPTZ NOT NULL
     );
   `)
 }

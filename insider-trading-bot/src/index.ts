@@ -1,7 +1,7 @@
 import cron from 'node-cron'
 import { loadConfig } from './config.js'
 import { logger } from './logger.js'
-import { getDb, closeDb, getDbInfo } from './db/index.js'
+import { getDb, initDb, closeDb } from './db/index.js'
 import { Repo } from './db/repo.js'
 import { runCycle } from './pipeline/ingest.js'
 import { runScoring } from './pipeline/score.js'
@@ -10,64 +10,39 @@ import { formatDeployNotice } from './telegram/format.js'
 
 const config = loadConfig()
 
-// Fail fast on a bad DB path or unwritable volume rather than at the first cycle.
-const db = getDb()
-
 /**
  * Storage check.
  *
- * Persistence failing is silent by nature: if a mount isn't in effect, the app
- * creates its database on the container filesystem, every query works, and the
- * whole `calls` history — the scoring dataset — is destroyed on the next deploy.
- *
- * `existedAtBoot: false` on a restart is the tell. RAILWAY_VOLUME_* are injected
- * by Railway only when a volume is actually attached, so their absence localises
- * the fault to the platform side rather than our path handling.
+ * Fail fast on an unreachable database or bad credentials rather than three hours
+ * later, mid-cycle. `initDb` retries for about a minute first, because on a fresh
+ * project the worker and its postgres are created together and either can win the
+ * race to boot.
  */
-// Captured here so the deploy announcement below can report it.
-let storageOk = true
-let seenEventsAtBoot = 0
-let openCallsAtBoot = 0
+const dbInfo = await initDb()
 
-{
-  const repo = new Repo(db)
-  const info = getDbInfo()
-  const volumeMountPath = process.env.RAILWAY_VOLUME_MOUNT_PATH ?? null
-  const seenEvents = repo.countSeenEvents()
-  seenEventsAtBoot = seenEvents
-  openCallsAtBoot = repo.countOpenCalls()
+// Captured here so the deploy announcement below can report them.
+const repo = new Repo(getDb())
+const seenEventsAtBoot = await repo.countSeenEvents()
+const openCallsAtBoot = await repo.countOpenCalls()
 
-  const details = {
-    dbPath: info?.path,
-    resolvedPath: info?.resolvedPath,
-    existedAtBoot: info?.existedAtBoot ?? null,
-    freeMB: info?.freeBytes == null ? null : Math.round(info.freeBytes / 1e6),
-    volumeMountPath,
-    volumeName: process.env.RAILWAY_VOLUME_NAME ?? null,
-    seenEvents,
-    calls: repo.countCalls(),
-  }
-
-  // A database that is inside the declared mount path and already had rows is
-  // proof of working persistence. Anything else is worth shouting about, because
-  // the alternative is discovering it after losing a month of scored calls.
-  const onVolume = volumeMountPath != null && info?.resolvedPath.startsWith(volumeMountPath)
-  if (volumeMountPath != null && !onVolume) {
-    storageOk = false
-    logger.error(
-      details,
-      'storage check: database is NOT inside the Railway volume mount — data will be lost on redeploy',
-    )
-  } else if (volumeMountPath == null && process.env.RAILWAY_ENVIRONMENT_NAME != null) {
-    storageOk = false
-    logger.error(
-      details,
-      'storage check: running on Railway with no volume attached — data will be lost on redeploy',
-    )
-  } else {
-    logger.info(details, 'storage check')
-  }
-}
+/**
+ * `existedAtBoot: false` means the schema was not there before this boot — a
+ * genuine first deploy, or a deploy pointed at the wrong database. Unlike the
+ * SQLite version this is not silent data loss (an unreachable database is a
+ * crash, not an empty file quietly created on the container filesystem), so it
+ * is reported rather than shouted about.
+ */
+logger.info(
+  {
+    server: dbInfo.server,
+    database: dbInfo.database,
+    serverVersion: dbInfo.serverVersion,
+    existedAtBoot: dbInfo.existedAtBoot,
+    seenEvents: seenEventsAtBoot,
+    calls: await repo.countCalls(),
+  },
+  dbInfo.existedAtBoot ? 'storage check' : 'storage check: schema created on this boot',
+)
 
 logger.info(
   {
@@ -139,7 +114,7 @@ void postMessage(
   formatDeployNotice({
     // Railway injects the commit SHA; absent locally and under docker-compose.
     commit: process.env.RAILWAY_GIT_COMMIT_SHA ?? null,
-    storageOk,
+    freshDatabase: !dbInfo.existedAtBoot,
     seenEvents: seenEventsAtBoot,
     openCalls: openCallsAtBoot,
     dryRun: config.DRY_RUN,
@@ -152,8 +127,8 @@ void postMessage(
 
 /**
  * Graceful shutdown: stop taking new work, let the in-flight cycle finish, then
- * checkpoint and close the database. `docker compose restart` mid-write would
- * otherwise risk leaving a hot WAL behind.
+ * drain the connection pool. Without the drain, `pool.end()` never runs and the
+ * server is left to time out connections that nothing is coming back for.
  */
 let shuttingDown = false
 
@@ -173,7 +148,7 @@ async function shutdown(signal: string): Promise<void> {
     await Promise.race([running, new Promise((r) => setTimeout(r, 8000))])
   }
 
-  closeDb()
+  await closeDb()
   logger.info('shutdown complete')
   process.exit(0)
 }

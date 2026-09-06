@@ -13,13 +13,17 @@ arriving in your channel.
 
 | | Cost | Time |
 | --- | --- | --- |
-| An OpenAI account with credit | pay-per-token, **the only thing here that costs money** | 5 min |
+| An OpenAI account with credit | pay-per-token | 5 min |
 | A Telegram bot + channel | free | 5 min |
 | A Finnhub key | free tier | 2 min |
 | A Marketaux key | free tier | 2 min |
 | A contact string for SEC EDGAR | free, no signup | 10 sec |
 | Docker running locally | free | — |
 | The `gg` CLI | free | 2 min |
+
+Running it costs OpenAI tokens plus the two Gagarin components the deploy creates
+(the worker and its Postgres) — see "What this costs" in section 4. Every API key
+above is on a free tier.
 
 ---
 
@@ -161,9 +165,14 @@ right, and it costs nothing. Run it before you deploy. `triage:dry` is the first
 command that spends money, and it is the one worth reading carefully — a filter
 rejecting the right things for the wrong reasons will fail differently tomorrow.
 
-You do **not** need to run `npm run migrate` for the deploy. The schema is applied
-automatically the first time the database is opened (`src/db/index.ts` calls
-`migrate()`), so a fresh volume migrates itself on first boot.
+You do **not** need to run `npm run migrate` for the deploy. The worker applies the
+schema itself at boot (`src/db/index.ts` calls `migrate()`, and every statement is
+`CREATE ... IF NOT EXISTS`), so a freshly provisioned database migrates itself.
+
+`npm test` and `ingest:dry` need no database. Anything that opens one — `npm run
+migrate`, `npm run score`, `npm run dev` — needs `DB_URL` to point at a Postgres
+that is actually running; `docker compose up -d db` gives you one on host port
+5433.
 
 ---
 
@@ -214,11 +223,16 @@ and it explains each decision inline.
 
 Three things it does that matter, and that you would have to remember by hand:
 
-- **It forces `DB_PATH=/data/insider.sqlite`**, overriding whatever your `.env`
-  says. Your local `.env` points at `./data/` for local runs; on Gagarin that path
-  is inside the container filesystem, so the database would be silently recreated
-  empty on every deploy and the whole scoring dataset would evaporate. `/data` is
-  the volume.
+- **It provisions a `postgres` resource called `db`, and declares that the worker
+  reaches it.** That single `gg deps add` both opens the network route and hands
+  the service its credentials as `DB_URL` — which is exactly the variable
+  `src/config.ts` reads, so nothing has to be copied anywhere. The resource is
+  created *before* the service, so the worker never boots into a window where its
+  database does not exist.
+- **It strips `DB_URL` out of what it sends.** Your local `.env` points at a
+  Postgres on your own machine, which the cluster cannot reach. It would be
+  ignored anyway — a resource's injected variable outranks anything a deploy
+  passes — and a stale credential in a deploy call is worth not having at all.
 - **It strips the quotes from your `.env` values.** This repo's `.env.example`
   quotes everything (`KEY="value"`), which is correct for a shell but would be
   passed through literally as part of the value by a plain `KEY=VALUE` reader.
@@ -227,24 +241,33 @@ Three things it does that matter, and that you would have to remember by hand:
   variable you forget to restate is a variable you removed. Always deploy via the
   script, never a bare `gg deploy`.
 
+### What this costs
+
+The deploy creates **two** billable things: the worker and the Postgres, both at
+size `s`. Check the current rate with `gg status insider-bot`, which prints the
+day's accrued cost at the bottom of the table. The database is the one addition
+over the SQLite version, which stored everything on a volume attached to the
+worker.
+
+`DB_SIZE=m ./deploy.sh` moves the database up if you ever need it; you almost
+certainly will not, since it serves exactly one client that wakes every three
+hours.
+
 ### On build time
 
 The build takes about two minutes, and the first one takes longer only because
 it pulls `node:22-bookworm-slim`.
 
-If you expected worse from a project with a native dependency: `better-sqlite3`
-ships prebuilt binaries, and its install script tries `prebuild-install` before
-falling back to `node-gyp`. The prebuild exists for linux/x64 on glibc, which is
-what Gagarin runs, so nothing is ever compiled here.
+Nothing is compiled. Every dependency is pure JavaScript — `pg` speaks the
+Postgres wire protocol in JS rather than linking `libpq` — so the image needs no
+build toolchain, no Python, and no `node-gyp`. The Dockerfile installs with
+`--ignore-scripts` in both stages for that reason.
 
-The Dockerfile therefore installs **no** build toolchain, and that is load-bearing
-rather than an omission. The fallback is spelled `prebuild-install || node-gyp
-rebuild` — with a compiler present, a missing prebuild would quietly become a
-full source build, which is slow natively and much slower under the QEMU
-emulation Docker uses to cross-build linux/amd64 from an ARM Mac. With no
-toolchain in the image that fallback cannot start, so the failure is immediate
-and legible instead of showing up as a build that mysteriously takes fifteen
-minutes. The deps stage asserts the binary loads before the build proceeds.
+This used to be the fiddliest part of the deploy. The SQLite version linked a
+native binary that was specific to both glibc and the Node ABI, which forced the
+builder and runtime stages onto the same base image and made a missing prebuild
+fail as a mysteriously slow build rather than an error. None of that applies any
+more.
 
 ### Why there is no `gg domain add`
 
@@ -278,10 +301,16 @@ gg logs insider-bot/bot
 
 A healthy first boot logs, in order:
 
-1. `storage check` — with `dbPath: /data/insider.sqlite` and `existedAtBoot: false`.
-   False is correct on the very first boot; the file did not exist yet.
+1. `storage check: schema created on this boot` — naming the database, its
+   Postgres version, and `existedAtBoot: false`. False is correct on the very
+   first boot; the tables did not exist yet.
 2. `telegram channel reachable`
 3. `insider bot starting` — echoing your models, schedules and `dryRun`.
+
+If the database is still starting, you will first see a few
+`database not reachable yet` warnings. That is expected on a brand-new project:
+the worker retries for about a minute before giving up, because it and its
+Postgres are created together and either can win the race to boot.
 
 Then it waits for the cron. At the default `INGEST_CRON="7 */3 * * *"` the first
 cycle runs at 7 minutes past the next 3-hour mark, so **an idle log is the
@@ -298,15 +327,26 @@ again:
 gg logs insider-bot/bot | grep 'storage check'
 ```
 
-`existedAtBoot: true` on that second boot is your proof the volume is real and
-the database survived. If it says `false` again, the database is being written to
-the container filesystem and every restart is losing your call history — check
-that `DB_PATH` is `/data/insider.sqlite` and that the volume was attached.
+`existedAtBoot: true` on that second boot, with a non-zero event count, is your
+proof the database is real and the history survived. If it says `false` again the
+deploy is pointed at a different database from the one it filled — check
+`gg deps ls insider-bot/bot` names `db`, and that nothing is overriding `DB_URL`.
 
-Be aware the code's own storage check cannot help you here. It looks for
-`RAILWAY_VOLUME_*` variables to decide whether the database sits inside a mount;
-on Gagarin those are absent, so it logs its findings and passes without judging
-them. `existedAtBoot` across a redeploy is the real signal.
+Unlike the SQLite version, a broken database here is loud rather than silent: an
+unreachable or misconfigured Postgres is a boot that retries and then exits, not
+a worker that runs happily while writing to a filesystem that is about to be
+thrown away. The deploy announcement in the channel says `fresh database` on any
+boot that had to create the schema, so an unexpected one is visible without
+reading logs at all.
+
+To look at the data yourself:
+
+```bash
+gg resource secrets insider-bot/db     # prints DB_URL among the rest
+psql "$(gg resource secrets insider-bot/db --format json | jq -r .env.DB_URL)"
+```
+
+Treat that output as a live credential — do not paste it anywhere.
 
 ---
 
@@ -318,10 +358,12 @@ them. `existedAtBoot` across a redeploy is the real signal.
 | `Invalid environment configuration` and a list of keys | A required credential is empty in `.env`. Config is parsed once at startup so this fails now, not three hours in, mid-cycle. |
 | Every OpenAI call fails with `insufficient_quota` | The key is valid; the account has no credit. Add billing. |
 | EDGAR returns 403 | `SEC_USER_AGENT` is missing or not a real contact string. Repeat offences get the IP blocked. |
-| `existedAtBoot: false` on every boot | The database is not on the volume. See "Confirming persistence" above. |
+| `existedAtBoot: false` on every boot | The deploy is pointed at a different database each time. See "Confirming persistence" above. |
+| Boot logs `database not reachable yet`, then exits | The `db` resource is not running (`gg status insider-bot`), or the worker does not declare it. `gg deps ls insider-bot/bot` should name `db`; if not, `gg deps add insider-bot/bot db`. |
+| `Invalid environment configuration: DB_URL` | The service does not reach the `db` resource, so nothing injected `DB_URL`. Same fix as above. |
 | Nothing posts, but the logs look clean | Working as intended, most likely. Gates are strict: conviction must be ≥7, one post per ticker per 72h, 3/day maximum. Days with nothing publishable are normal. Check `triage:dry` locally if you suspect the filter. |
 | `[project_not_found]` from a `gg` command | The project name is wrong, or it belongs to another account. `gg projects` lists what you can reach. |
-| A `gg` command hangs talking to another service | Not applicable here — this project has one service and no dependencies. If you add one, the cause is almost always a missing `gg deps add`. |
+| The worker hangs on connect rather than failing | A missing `gg deps add`. An undeclared call is *dropped*, not refused, so it presents as a timeout rather than an error naming the cause. |
 
 Read `gg logs insider-bot/bot` before changing anything. Nearly every failure
 above names itself there.
@@ -334,7 +376,16 @@ gg logs insider-bot/bot                # what it is doing
 gg history insider-bot/bot             # every deploy, newest first
 gg rollback insider-bot/bot            # put the previous one back
 ./deploy.sh                            # ship a new build
+
+gg resource backups insider-bot/db     # nightly dumps, kept 14 days
+gg resource backup  insider-bot/db     # take one now, e.g. before a schema change
 ```
+
+Postgres is dumped nightly and kept for fourteen days, which is the one real
+durability gain over the SQLite file: there was no backup of that at all. A
+restore always creates a *new* resource rather than overwriting a live one, so
+recovering means `gg resource restore`, repointing the worker with `gg deps`, and
+only then destroying the old database.
 
 Prefer `gg rollback` to a corrective deploy when something you just shipped is
 broken and you do not yet know why. It restores a state that provably ran,

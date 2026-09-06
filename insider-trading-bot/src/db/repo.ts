@@ -1,4 +1,4 @@
-import type { Database } from 'better-sqlite3'
+import type { Pool } from 'pg'
 
 export type TriageVerdict = 'pass' | 'reject'
 export type CallStatus = 'open' | 'won' | 'lost' | 'expired'
@@ -10,6 +10,7 @@ export interface SeenEventRow {
   url: string | null
   headline: string
   ticker: string | null
+  /** ISO8601 UTC — see the TIMESTAMPTZ parser in db/index.ts. */
   published_at: string | null
   first_seen_at: string
   triage_verdict: TriageVerdict | null
@@ -26,6 +27,7 @@ export interface CallRow {
   thesis: string
   second_order_chain: string | null
   catalyst: string | null
+  /** Date-only, `YYYY-MM-DD`. */
   catalyst_by: string | null
   key_risk: string | null
   event_id: string | null
@@ -41,168 +43,208 @@ export interface CallRow {
 
 export type NewCall = Omit<CallRow, 'id' | 'status' | 'resolved_at' | 'resolved_price' | 'return_pct'>
 
+type NewSeenEvent = Pick<
+  SeenEventRow,
+  'id' | 'source' | 'url' | 'headline' | 'ticker' | 'published_at'
+>
+
 /**
  * All SQL lives here so the pipeline modules stay free of query strings and the
  * schema has exactly one consumer.
+ *
+ * Every method is async because the driver is: the queries themselves are as
+ * cheap as they look, but each one is a network round trip rather than a local
+ * file read.
  */
 export class Repo {
-  constructor(private readonly db: Database) {}
+  constructor(private readonly db: Pool) {}
 
   // ---------- seen_events ----------
 
-  /** Ids already recorded, so a cycle can skip them before spending any tokens. */
-  filterUnseen(ids: readonly string[]): Set<string> {
+  /** Ids not yet recorded, so a cycle can skip the rest before spending any tokens. */
+  async filterUnseen(ids: readonly string[]): Promise<Set<string>> {
     if (ids.length === 0) return new Set()
-    const seen = new Set<string>()
-    // Chunked to stay well under SQLITE_MAX_VARIABLE_NUMBER on large cycles.
-    for (let i = 0; i < ids.length; i += 400) {
-      const chunk = ids.slice(i, i + 400)
-      const placeholders = chunk.map(() => '?').join(',')
-      const rows = this.db
-        .prepare<string[], { id: string }>(
-          `SELECT id FROM seen_events WHERE id IN (${placeholders})`,
-        )
-        .all(...chunk)
-      for (const r of rows) seen.add(r.id)
-    }
+    // `= ANY($1)` takes the whole batch as a single array parameter, so there is
+    // no placeholder limit to chunk around the way the SQLite version had to.
+    const { rows } = await this.db.query<{ id: string }>(
+      `SELECT id FROM seen_events WHERE id = ANY($1::text[])`,
+      [ids],
+    )
+    const seen = new Set(rows.map((r) => r.id))
     return new Set(ids.filter((id) => !seen.has(id)))
   }
 
-  recordSeen(
-    events: readonly Pick<
-      SeenEventRow,
-      'id' | 'source' | 'url' | 'headline' | 'ticker' | 'published_at'
-    >[],
-    now: string,
-  ): void {
-    const stmt = this.db.prepare(`
-      INSERT INTO seen_events (id, source, url, headline, ticker, published_at, first_seen_at)
-      VALUES (@id, @source, @url, @headline, @ticker, @published_at, @first_seen_at)
-      ON CONFLICT(id) DO NOTHING
-    `)
-    const tx = this.db.transaction((batch: typeof events) => {
-      for (const e of batch) stmt.run({ ...e, first_seen_at: now })
-    })
-    tx(events)
+  async recordSeen(events: readonly NewSeenEvent[], now: string): Promise<void> {
+    if (events.length === 0) return
+    // One statement for the whole batch: the columns go down as parallel arrays
+    // and `unnest` zips them back into rows. Atomic on its own, so the explicit
+    // transaction the SQLite version needed is gone. ON CONFLICT DO NOTHING also
+    // covers duplicate ids *within* the batch, not just against existing rows.
+    await this.db.query(
+      `INSERT INTO seen_events
+         (id, source, url, headline, ticker, published_at, first_seen_at)
+       SELECT id, source, url, headline, ticker, published_at, $7::timestamptz
+         FROM unnest($1::text[], $2::text[], $3::text[],
+                     $4::text[], $5::text[], $6::timestamptz[])
+           AS e(id, source, url, headline, ticker, published_at)
+       ON CONFLICT (id) DO NOTHING`,
+      [
+        events.map((e) => e.id),
+        events.map((e) => e.source),
+        events.map((e) => e.url),
+        events.map((e) => e.headline),
+        events.map((e) => e.ticker),
+        events.map((e) => e.published_at),
+        now,
+      ],
+    )
   }
 
-  countSeenEvents(): number {
-    const row = this.db
-      .prepare<[], { n: number }>(`SELECT COUNT(*) AS n FROM seen_events`)
-      .get()
-    return row?.n ?? 0
+  async countSeenEvents(): Promise<number> {
+    const { rows } = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM seen_events`)
+    return rows[0]?.n ?? 0
   }
 
-  countCalls(): number {
-    const row = this.db.prepare<[], { n: number }>(`SELECT COUNT(*) AS n FROM calls`).get()
-    return row?.n ?? 0
+  async countCalls(): Promise<number> {
+    const { rows } = await this.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM calls`)
+    return rows[0]?.n ?? 0
   }
 
-  recordTriage(id: string, verdict: TriageVerdict, reason: string, eventType?: string): void {
-    this.db
-      .prepare(
-        `UPDATE seen_events
-            SET triage_verdict = ?, triage_reason = ?, event_type = ?
-          WHERE id = ?`,
-      )
-      .run(verdict, reason, eventType ?? null, id)
+  async recordTriage(
+    id: string,
+    verdict: TriageVerdict,
+    reason: string,
+    eventType?: string,
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE seen_events
+          SET triage_verdict = $1, triage_reason = $2, event_type = $3
+        WHERE id = $4`,
+      [verdict, reason, eventType ?? null, id],
+    )
   }
 
   /** Retention: events are only useful for dedupe while they are recent news. */
-  pruneSeenEvents(olderThanIso: string): number {
-    return this.db.prepare(`DELETE FROM seen_events WHERE first_seen_at < ?`).run(olderThanIso)
-      .changes
+  async pruneSeenEvents(olderThanIso: string): Promise<number> {
+    const res = await this.db.query(`DELETE FROM seen_events WHERE first_seen_at < $1`, [
+      olderThanIso,
+    ])
+    return res.rowCount ?? 0
   }
 
   // ---------- calls ----------
 
-  insertCall(call: NewCall): number {
-    const info = this.db
-      .prepare(
-        `INSERT INTO calls (
-           ticker, company, direction, conviction, thesis, second_order_chain,
-           catalyst, catalyst_by, key_risk, event_id, source_url,
-           entry_price, entry_at, posted_message_id
-         ) VALUES (
-           @ticker, @company, @direction, @conviction, @thesis, @second_order_chain,
-           @catalyst, @catalyst_by, @key_risk, @event_id, @source_url,
-           @entry_price, @entry_at, @posted_message_id
-         )`,
-      )
-      .run(call)
-    return Number(info.lastInsertRowid)
+  async insertCall(call: NewCall): Promise<number> {
+    const { rows } = await this.db.query<{ id: number }>(
+      `INSERT INTO calls (
+         ticker, company, direction, conviction, thesis, second_order_chain,
+         catalyst, catalyst_by, key_risk, event_id, source_url,
+         entry_price, entry_at, posted_message_id
+       ) VALUES (
+         $1, $2, $3, $4, $5, $6,
+         $7, $8::date, $9, $10, $11,
+         $12, $13::timestamptz, $14
+       )
+       RETURNING id`,
+      [
+        call.ticker,
+        call.company,
+        call.direction,
+        call.conviction,
+        call.thesis,
+        call.second_order_chain,
+        call.catalyst,
+        call.catalyst_by,
+        call.key_risk,
+        call.event_id,
+        call.source_url,
+        call.entry_price,
+        call.entry_at,
+        call.posted_message_id,
+      ],
+    )
+    const id = rows[0]?.id
+    if (id === undefined) throw new Error('insertCall returned no id')
+    return id
   }
 
   /** Open calls whose catalyst window has passed — the scoring job's input. */
-  openCallsDueBy(iso: string): CallRow[] {
-    return this.db
-      .prepare<string[], CallRow>(
-        `SELECT * FROM calls
-          WHERE status = 'open' AND catalyst_by IS NOT NULL AND catalyst_by <= ?
-          ORDER BY catalyst_by`,
-      )
-      .all(iso)
+  async openCallsDueBy(isoDate: string): Promise<CallRow[]> {
+    const { rows } = await this.db.query<CallRow>(
+      `SELECT * FROM calls
+        WHERE status = 'open' AND catalyst_by IS NOT NULL AND catalyst_by <= $1::date
+        ORDER BY catalyst_by`,
+      [isoDate],
+    )
+    return rows
   }
 
-  resolveCall(id: number, status: CallStatus, price: number, returnPct: number, at: string): void {
-    this.db
-      .prepare(
-        `UPDATE calls
-            SET status = ?, resolved_price = ?, return_pct = ?, resolved_at = ?
-          WHERE id = ?`,
-      )
-      .run(status, price, returnPct, at, id)
+  async resolveCall(
+    id: number,
+    status: CallStatus,
+    price: number,
+    returnPct: number,
+    at: string,
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE calls
+          SET status = $1, resolved_price = $2, return_pct = $3, resolved_at = $4::timestamptz
+        WHERE id = $5`,
+      [status, price, returnPct, at, id],
+    )
   }
 
-  countOpenCalls(): number {
-    const row = this.db
-      .prepare<[], { n: number }>(`SELECT COUNT(*) AS n FROM calls WHERE status = 'open'`)
-      .get()
-    return row?.n ?? 0
+  async countOpenCalls(): Promise<number> {
+    const { rows } = await this.db.query<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM calls WHERE status = 'open'`,
+    )
+    return rows[0]?.n ?? 0
   }
 
-  resolvedSince(iso: string): CallRow[] {
-    return this.db
-      .prepare<string[], CallRow>(
-        `SELECT * FROM calls WHERE status != 'open' AND resolved_at >= ? ORDER BY return_pct DESC`,
-      )
-      .all(iso)
+  async resolvedSince(iso: string): Promise<CallRow[]> {
+    const { rows } = await this.db.query<CallRow>(
+      `SELECT * FROM calls
+        WHERE status <> 'open' AND resolved_at >= $1::timestamptz
+        ORDER BY return_pct DESC`,
+      [iso],
+    )
+    return rows
   }
 
-  hasOpenCall(ticker: string, direction: Direction): boolean {
-    const row = this.db
-      .prepare<[string, string], { n: number }>(
-        `SELECT COUNT(*) AS n FROM calls
-          WHERE status = 'open' AND ticker = ? AND direction = ?`,
-      )
-      .get(ticker, direction)
-    return (row?.n ?? 0) > 0
+  async hasOpenCall(ticker: string, direction: Direction): Promise<boolean> {
+    const { rows } = await this.db.query<{ ok: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM calls
+          WHERE status = 'open' AND ticker = $1 AND direction = $2
+       ) AS ok`,
+      [ticker, direction],
+    )
+    return rows[0]?.ok ?? false
   }
 
-  countCallsSince(iso: string): number {
-    const row = this.db
-      .prepare<[string], { n: number }>(`SELECT COUNT(*) AS n FROM calls WHERE entry_at >= ?`)
-      .get(iso)
-    return row?.n ?? 0
+  async countCallsSince(iso: string): Promise<number> {
+    const { rows } = await this.db.query<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM calls WHERE entry_at >= $1::timestamptz`,
+      [iso],
+    )
+    return rows[0]?.n ?? 0
   }
 
   // ---------- cooldown ----------
 
-  lastPostedAt(ticker: string): string | null {
-    const row = this.db
-      .prepare<[string], { last_posted_at: string }>(
-        `SELECT last_posted_at FROM ticker_cooldown WHERE ticker = ?`,
-      )
-      .get(ticker)
-    return row?.last_posted_at ?? null
+  async lastPostedAt(ticker: string): Promise<string | null> {
+    const { rows } = await this.db.query<{ last_posted_at: string }>(
+      `SELECT last_posted_at FROM ticker_cooldown WHERE ticker = $1`,
+      [ticker],
+    )
+    return rows[0]?.last_posted_at ?? null
   }
 
-  touchCooldown(ticker: string, at: string): void {
-    this.db
-      .prepare(
-        `INSERT INTO ticker_cooldown (ticker, last_posted_at) VALUES (?, ?)
-         ON CONFLICT(ticker) DO UPDATE SET last_posted_at = excluded.last_posted_at`,
-      )
-      .run(ticker, at)
+  async touchCooldown(ticker: string, at: string): Promise<void> {
+    await this.db.query(
+      `INSERT INTO ticker_cooldown (ticker, last_posted_at) VALUES ($1, $2::timestamptz)
+       ON CONFLICT (ticker) DO UPDATE SET last_posted_at = excluded.last_posted_at`,
+      [ticker, at],
+    )
   }
 }

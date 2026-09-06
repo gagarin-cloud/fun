@@ -23,19 +23,22 @@ SERVICE="${SERVICE:-bot}"
 # nothing ever connects to it. See "Why there is no gg domain add" in DEPLOY.md.
 PORT="${PORT:-8080}"
 
-# Where the SQLite database lives on the volume. This MUST NOT come from .env —
-# see the note by the --env DB_PATH override below.
-VOLUME_PATH="/data"
-DB_PATH="${VOLUME_PATH}/insider.sqlite"
+# The postgres resource holding every seen event and scored call. Its name is
+# load-bearing: gagarin derives the injected variable names from it, so a
+# resource called `db` is what makes DB_URL — the one variable src/config.ts
+# reads — appear in the service's environment. Renaming it here means renaming
+# DB_URL in config.ts too.
+DB_RESOURCE="${DB_RESOURCE:-db}"
 
-# Volume size in GB. A volume is set once, at the deploy that creates the
-# service; a later deploy cannot move or resize it, so this is a one-way door.
-# 2GB is generous for a SQLite file that stores news metadata and scored calls.
-VOLUME_SIZE="${VOLUME_SIZE:-2}"
+# Storage ceiling in GB for the database. This can be raised later by restating
+# the resource with a bigger number; it can never be lowered. 10GB is generous
+# for news metadata and scored calls.
+DB_STORAGE="${DB_STORAGE:-10}"
 
-# s = 0.5 vCPU / 1GB shared. This worker sleeps between 3-hourly cycles; it does
-# not need dedicated CPU.
+# s = 0.5 vCPU / 1GB shared, for both. The worker sleeps between 3-hourly cycles
+# and the database serves one client; neither needs dedicated CPU.
 SIZE="${SIZE:-s}"
+DB_SIZE="${DB_SIZE:-s}"
 
 ENV_FILE="${ENV_FILE:-.env}"
 
@@ -140,11 +143,12 @@ fi
 #      shell. A plain KEY=VALUE reader would treat the quote characters as part
 #      of the value and every credential would be wrong by two bytes.
 #   2. Comments and blank lines are dropped.
-#   3. DB_PATH is removed. The local .env points it at ./data for local runs;
-#      inside the container that resolves to /app/data — the container
-#      filesystem, not the volume — so the database would be recreated empty on
-#      every deploy and the entire scoring dataset would be silently lost. It is
-#      re-added below as an explicit --env pointing at the volume.
+#   3. DB_URL is removed. The local .env points it at a Postgres on your own
+#      machine, which is not reachable from the cluster and, if it somehow were,
+#      is not the database the deployed worker should be writing to. gagarin
+#      injects the real DB_URL from the postgres resource, and an injected
+#      variable outranks anything a deploy passes — so sending ours would be
+#      ignored anyway. Better not to have a stale credential in the call at all.
 #
 # Written 0600 and deleted on exit: it holds every credential in the clear.
 RENDERED_ENV="$(mktemp -t insider-bot-env.XXXXXX)"
@@ -159,8 +163,8 @@ while IFS= read -r line; do
   key="${BASH_REMATCH[1]}"
   val="${BASH_REMATCH[2]}"
 
-  # Set explicitly below; never take these from the file.
-  [[ "$key" == "DB_PATH" || "$key" == "TZ" || "$key" == "NODE_ENV" ]] && continue
+  # Injected by gagarin, or set explicitly below; never take these from the file.
+  [[ "$key" == "DB_URL" || "$key" == "TZ" || "$key" == "NODE_ENV" ]] && continue
 
   # Strip one layer of matching quotes, then trailing whitespace.
   val="$(printf '%s' "$val" | sed -E 's/^[[:space:]]*//; s/[[:space:]]*$//; s/^"(.*)"$/\1/; s/^'"'"'(.*)'"'"'$/\1/')"
@@ -179,15 +183,22 @@ else
   run gg init "$PROJECT"
 fi
 
-# A volume can only be declared on the deploy that creates the service; passing
-# it later is at best a no-op and at worst a refusal. So probe for the service
-# and only ask for the volume when we are actually creating it.
+# ------------------------------------------------------------ the database
+
+# `gg resource add` is idempotent: restating an existing postgres with the same
+# storage changes nothing, and with a larger number grows it. So this is safe to
+# run on every deploy, and there is no "does it exist yet" probe to get wrong.
 #
-# The probe reads the service table from `gg status`, stripping the ●/○ health
-# marker so the service name lands in field 1. Note that `gg history` is NOT
-# usable here: it exits 0 and prints "bot has not been deployed yet" for a
-# service that does not exist, so using it would silently skip --volume on the
-# real first deploy and leave the database on the container filesystem.
+# It is created BEFORE the service that needs it, so the worker never starts into
+# a window where its database does not exist.
+say "Provisioning postgres '$PROJECT/$DB_RESOURCE' (${DB_STORAGE}GB, size $DB_SIZE)"
+run gg resource add "$PROJECT/$DB_RESOURCE" postgres --size "$DB_SIZE" --storage "$DB_STORAGE"
+
+# Probe for the service so the first deploy can be told apart from a redeploy.
+# The row is read from `gg status`, stripping the ●/○ health marker so the
+# service name lands in field 1. Note that `gg history` is NOT usable here: it
+# exits 0 and prints "bot has not been deployed yet" for a service that does not
+# exist.
 service_row() {
   gg status "$PROJECT" 2>/dev/null \
     | sed -E 's/^[[:space:]]*[●○][[:space:]]*//' \
@@ -195,45 +206,36 @@ service_row() {
 }
 
 first_deploy=1
-existing_row="$(service_row || true)"
-
-if [[ -n "$existing_row" ]]; then
+if [[ -n "$(service_row || true)" ]]; then
   first_deploy=0
   say "Service '$PROJECT/$SERVICE' exists — shipping a new build over it"
-
-  # Last field of the row is the VOLUME column; "—" means none is attached.
-  existing_volume="$(printf '%s' "$existing_row" | awk '{print $NF}')"
-  if [[ "$existing_volume" == "—" || "$existing_volume" == "-" ]]; then
-    warn "This service has NO volume attached."
-    warn "The database is on the container filesystem and every deploy wipes it."
-    warn "A volume can only be set on the deploy that creates a service, so the"
-    warn "only fix is to recreate it:  gg destroy $PROJECT/$SERVICE  then rerun this."
-    warn "Continuing — but nothing this worker records will survive a redeploy."
-  fi
 else
-  say "Service '$PROJECT/$SERVICE' is new — creating it with a ${VOLUME_SIZE}GB volume at $VOLUME_PATH"
+  say "Service '$PROJECT/$SERVICE' is new — creating it"
 fi
 
 # ---------------------------------------------------------------------- ship
 
-# --env wins over every --env-file, which is what makes the DB_PATH override
-# below authoritative regardless of what .env said.
-#
 # Gagarin replaces a service's environment wholesale on each deploy rather than
 # merging, so the full set is passed every time. A variable omitted here is a
 # variable removed from the running service.
+#
+# DB_URL is the exception and is deliberately absent: it comes from the postgres
+# resource via --deps, and a resource's injected variable outranks anything a
+# deploy sets. Passing one here would be ignored, so it is not passed.
+#
+# --deps is repeated on every ship, not just the first. It only ever adds, so it
+# is a no-op on a redeploy — but it means the very first deploy starts already
+# holding the credentials, and a later run repairs the edge if someone removed
+# it. An undeclared call to a database is dropped rather than refused, which
+# surfaces as a connection that hangs rather than one that fails.
 ship_args=(
   ship "$PROJECT/$SERVICE:$PORT"
   --size "$SIZE"
+  --deps "$DB_RESOURCE"
   --env-file "$RENDERED_ENV"
-  --env "DB_PATH=$DB_PATH"
   --env "TZ=UTC"
   --env "NODE_ENV=production"
 )
-
-if (( first_deploy )); then
-  ship_args+=(--volume "$VOLUME_PATH" --volume-size "$VOLUME_SIZE")
-fi
 
 # Roughly 2 minutes once the base image is cached; the first run also pulls
 # node:22-bookworm-slim. Nothing is compiled — see the Dockerfile header.
@@ -254,15 +256,15 @@ echo
 gg status "$PROJECT" || warn "could not read status; try 'gg status $PROJECT' again in a moment."
 echo
 
-# Assert the volume landed. Getting this wrong is silent and expensive: the
-# worker runs perfectly, writes to the container filesystem, and loses the whole
-# scoring dataset at the next deploy.
-volume_now="$(service_row | awk '{print $NF}' || true)"
-if [[ -n "$volume_now" && ( "$volume_now" == "—" || "$volume_now" == "-" ) ]]; then
-  warn "no volume is attached to $PROJECT/$SERVICE — the database will NOT survive a redeploy."
-  warn "See the note above about recreating the service."
-elif [[ -n "$volume_now" ]]; then
-  say "Volume attached: $volume_now"
+# Assert the dependency edge landed. Without it the worker holds no DB_URL and
+# could not reach the database even if it did — and because an undeclared call is
+# dropped rather than refused, the symptom is a boot that hangs on connect for a
+# minute and then exits, not an error naming the cause.
+if gg deps ls "$PROJECT/$SERVICE" 2>/dev/null | grep -qw "$DB_RESOURCE"; then
+  say "Service reaches '$DB_RESOURCE' and holds its credentials"
+else
+  warn "$PROJECT/$SERVICE does not appear to reach '$DB_RESOURCE'."
+  warn "Fix it with:  gg deps add $PROJECT/$SERVICE $DB_RESOURCE"
 fi
 
 cat <<EOF
@@ -270,16 +272,19 @@ $(say "Next steps")
 
   gg logs $PROJECT/$SERVICE        watch it boot
 
-A healthy first boot logs 'storage check' (with dbPath $DB_PATH),
-then 'telegram channel reachable', then 'insider bot starting'.
+A healthy first boot logs 'storage check' (naming the database and its Postgres
+version), then 'telegram channel reachable', then 'insider bot starting'.
 
 Then it goes quiet until the cron fires. At the default INGEST_CRON the first
 cycle runs at 7 minutes past the next 3-hour mark, so an idle log is expected
 rather than a hang.
 
 The service is private and has no public URL. That is deliberate: this worker
-only makes outbound calls and serves no HTTP.
+only makes outbound calls and serves no HTTP. The database is private too and
+never gets one — to query it from your own machine:
 
-To prove the volume works, run ./deploy.sh once more and check that the storage
-check reports existedAtBoot: true. See DEPLOY.md section 5.
+  gg resource secrets $PROJECT/$DB_RESOURCE
+
+To prove persistence, run ./deploy.sh once more: the storage check should log
+existedAtBoot: true and a non-zero event count. See DEPLOY.md section 5.
 EOF

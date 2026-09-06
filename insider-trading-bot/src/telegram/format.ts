@@ -60,7 +60,8 @@ export function formatSuggestion(t: Thesis, sourceUrl: string | null): string {
  */
 export function formatDeployNotice(info: {
   commit: string | null
-  storageOk: boolean
+  /** The schema was not in the database before this boot. */
+  freshDatabase: boolean
   seenEvents: number
   openCalls: number
   dryRun: boolean
@@ -69,12 +70,14 @@ export function formatDeployNotice(info: {
 
   if (info.commit) lines.push(`build <code>${esc(info.commit.slice(0, 7))}</code>`)
 
-  // Say plainly when persistence is broken — silent data loss is the failure mode
-  // this bot is most exposed to, and the channel is where it will be noticed.
+  // An unreachable database is a crash, so a notice arriving at all already means
+  // storage works. What is worth saying is whether it is the *same* database as
+  // last time: an empty one on a redeploy means this deploy is pointed somewhere
+  // new, and the call history is sitting in a database nothing is reading.
   lines.push(
-    info.storageOk
-      ? `storage ok · ${info.seenEvents} events seen · ${info.openCalls} open calls`
-      : '⚠️ <b>storage not persistent</b> — call history will be lost on redeploy',
+    info.freshDatabase
+      ? '🆕 <b>fresh database</b> — schema created at boot, no history yet'
+      : `storage ok · ${info.seenEvents} events seen · ${info.openCalls} open calls`,
   )
 
   if (info.dryRun) lines.push('<i>dry run — suggestions will be logged, not posted</i>')

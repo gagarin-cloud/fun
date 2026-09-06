@@ -6,26 +6,47 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      # The database lives on the host bind mount below, not in the image.
-      DB_PATH: /data/insider.sqlite
+      # Overrides whatever .env says, so a local DB_URL pointing at a Postgres on
+      # the host cannot accidentally be used from inside the container.
+      DB_URL: postgres://insider:insider@db:5432/insider
       # Pinned so the cron schedules mean the same thing on every host.
       TZ: UTC
       NODE_ENV: production
-    volumes:
-      # Host bind mount, deliberately not a named volume: ./data/insider.sqlite is
-      # openable directly in a local SQLite browser for inspecting calls and tuning
-      # prompts, and it survives `docker compose down -v`.
-      #
-      # No chown needed. docker-entrypoint.sh runs as root just long enough to fix
-      # ownership of this mount, then drops to the `node` user before starting the
-      # app — a mount replaces the image's own directory permissions, which is what
-      # caused a SQLITE_CANTOPEN crash-loop before the entrypoint existed.
-      - ./data:/data
+    depends_on:
+      db:
+        condition: service_healthy
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "5"
-    # SQLite in WAL mode wants a real filesystem; a tmpfs or network share will
-    # corrupt or lock. ./data on the VM's local disk is correct.
     stop_grace_period: 20s
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: insider
+      POSTGRES_PASSWORD: insider
+      POSTGRES_DB: insider
+    volumes:
+      # A named volume rather than a bind mount: unlike the SQLite file this is
+      # not something to open in a local browser, and Postgres wants its data
+      # directory owned by its own uid. Note it does NOT survive
+      # `docker compose down -v` — see README for how to dump before doing that.
+      - db-data:/var/lib/postgresql/data
+    ports:
+      # Published so `psql postgres://insider:insider@localhost:5433/insider`
+      # from the host can inspect calls and tune prompts. 5433 to stay clear of a
+      # Postgres already running locally on 5432.
+      - "5433:5432"
+    healthcheck:
+      # The bot's own initDb() retries, so this is belt and braces — but it keeps
+      # the first boot's logs clean rather than showing a minute of retries.
+      test: ["CMD-SHELL", "pg_isready -U insider -d insider"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  db-data:

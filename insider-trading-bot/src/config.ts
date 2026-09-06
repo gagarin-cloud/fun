@@ -25,7 +25,17 @@ const schema = z.object({
   THESIS_MODEL: z.string().default('gpt-5.6'),
 
   // --- storage ---
-  DB_PATH: z.string().default('./data/insider.sqlite'),
+  /**
+   * Postgres connection string.
+   *
+   * Named after the `db` postgres resource rather than after the protocol:
+   * gagarin injects `DB_URL` into every service that declares it reaches `db`,
+   * and an injected variable outranks anything a deploy sets. There is no
+   * `DATABASE_URL` to fall back to, and no default — a missing one must be a
+   * crash at boot, not a connection to a localhost that was never going to
+   * answer.
+   */
+  DB_URL: z.string().min(1),
 
   // --- gate tuning ---
   /** Minimum conviction (1-10) required to publish. */

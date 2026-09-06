@@ -14,9 +14,11 @@ function deps(over: {
 }): GateDeps {
   return {
     repo: {
-      lastPostedAt: () => over.lastPostedAt ?? null,
-      hasOpenCall: () => over.hasOpenCall ?? false,
-      countCallsSince: () => over.countCallsSince ?? 0,
+      // The real repo is async now, so the doubles are too — a synchronous stub
+      // would make every `await` in checkGate a no-op and hide an unawaited call.
+      lastPostedAt: async () => over.lastPostedAt ?? null,
+      hasOpenCall: async () => over.hasOpenCall ?? false,
+      countCallsSince: async () => over.countCallsSince ?? 0,
     },
     config: {
       MIN_CONVICTION: over.minConviction ?? 7,
@@ -30,50 +32,52 @@ function deps(over: {
 const input = { ticker: 'ACME', direction: 'long' as const, conviction: 8 }
 
 describe('checkGate', () => {
-  it('passes a clean high-conviction call', () => {
-    expect(checkGate(input, deps({}))).toEqual({ ok: true })
+  it('passes a clean high-conviction call', async () => {
+    expect(await checkGate(input, deps({}))).toEqual({ ok: true })
   })
 
-  it('blocks below the conviction floor', () => {
-    const d = checkGate({ ...input, conviction: 6 }, deps({}))
+  it('blocks below the conviction floor', async () => {
+    const d = await checkGate({ ...input, conviction: 6 }, deps({}))
     expect(d.ok).toBe(false)
     expect(d.ok === false && d.reason).toContain('below floor')
   })
 
-  it('allows exactly the floor', () => {
-    expect(checkGate({ ...input, conviction: 7 }, deps({ minConviction: 7 })).ok).toBe(true)
+  it('allows exactly the floor', async () => {
+    expect((await checkGate({ ...input, conviction: 7 }, deps({ minConviction: 7 }))).ok).toBe(true)
   })
 
-  it('blocks a duplicate open call in the same direction', () => {
-    const d = checkGate(input, deps({ hasOpenCall: true }))
+  it('blocks a duplicate open call in the same direction', async () => {
+    const d = await checkGate(input, deps({ hasOpenCall: true }))
     expect(d.ok).toBe(false)
     expect(d.ok === false && d.reason).toContain('already exists')
   })
 
-  it('blocks inside the ticker cooldown', () => {
+  it('blocks inside the ticker cooldown', async () => {
     // 10h ago, cooldown 72h.
-    const d = checkGate(input, deps({ lastPostedAt: '2026-08-14T02:00:00.000Z' }))
+    const d = await checkGate(input, deps({ lastPostedAt: '2026-08-14T02:00:00.000Z' }))
     expect(d.ok).toBe(false)
     expect(d.ok === false && d.reason).toContain('cooldown')
   })
 
-  it('allows once the cooldown has elapsed', () => {
+  it('allows once the cooldown has elapsed', async () => {
     // 80h ago.
-    expect(checkGate(input, deps({ lastPostedAt: '2026-08-11T04:00:00.000Z' })).ok).toBe(true)
+    expect((await checkGate(input, deps({ lastPostedAt: '2026-08-11T04:00:00.000Z' }))).ok).toBe(
+      true,
+    )
   })
 
-  it('blocks at the daily cap', () => {
-    const d = checkGate(input, deps({ countCallsSince: 3, maxPerDay: 3 }))
+  it('blocks at the daily cap', async () => {
+    const d = await checkGate(input, deps({ countCallsSince: 3, maxPerDay: 3 }))
     expect(d.ok).toBe(false)
     expect(d.ok === false && d.reason).toContain('daily cap')
   })
 
-  it('allows one below the daily cap', () => {
-    expect(checkGate(input, deps({ countCallsSince: 2, maxPerDay: 3 })).ok).toBe(true)
+  it('allows one below the daily cap', async () => {
+    expect((await checkGate(input, deps({ countCallsSince: 2, maxPerDay: 3 }))).ok).toBe(true)
   })
 
-  it('ignores an unparseable last-posted timestamp rather than blocking forever', () => {
-    expect(checkGate(input, deps({ lastPostedAt: 'not-a-date' })).ok).toBe(true)
+  it('ignores an unparseable last-posted timestamp rather than blocking forever', async () => {
+    expect((await checkGate(input, deps({ lastPostedAt: 'not-a-date' }))).ok).toBe(true)
   })
 })
 

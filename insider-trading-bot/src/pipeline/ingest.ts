@@ -59,7 +59,7 @@ export async function runCycle(): Promise<CycleResult> {
   result.fetched = events.length
   if (events.length === 0) return result
 
-  const unseenIds = repo.filterUnseen(events.map((e) => e.id))
+  const unseenIds = await repo.filterUnseen(events.map((e) => e.id))
   const fresh = events.filter((e) => unseenIds.has(e.id))
   result.newEvents = fresh.length
   if (fresh.length === 0) {
@@ -67,7 +67,7 @@ export async function runCycle(): Promise<CycleResult> {
     return result
   }
 
-  repo.recordSeen(
+  await repo.recordSeen(
     fresh.map((e) => ({
       id: e.id,
       source: e.source,
@@ -81,7 +81,7 @@ export async function runCycle(): Promise<CycleResult> {
 
   const verdicts = await triage(fresh)
   for (const v of verdicts) {
-    repo.recordTriage(v.id, v.verdict, v.reason, v.event_type ?? undefined)
+    await repo.recordTriage(v.id, v.verdict, v.reason, v.event_type ?? undefined)
   }
 
   const byId = new Map(fresh.map((e) => [e.id, e]))
@@ -113,7 +113,7 @@ export async function runCycle(): Promise<CycleResult> {
         { ticker: v.primary_ticker, marketCap: cap },
         'below market cap floor — skipping thesis',
       )
-      repo.recordTriage(
+      await repo.recordTriage(
         v.id,
         'reject',
         `below market cap floor ($${Math.round(cap / 1e6)}M)`,
@@ -145,7 +145,7 @@ export async function runCycle(): Promise<CycleResult> {
 
   // Post the strongest first so the daily cap is spent on the best ideas.
   for (const { thesis, event } of rankByConviction(candidates)) {
-    const decision = checkGate(
+    const decision = await checkGate(
       { ticker: thesis.ticker, direction: thesis.direction, conviction: thesis.conviction },
       { repo, config, now: new Date() },
     )
@@ -161,7 +161,7 @@ export async function runCycle(): Promise<CycleResult> {
     if (messageId === null) continue
 
     const at = new Date().toISOString()
-    repo.insertCall({
+    await repo.insertCall({
       ticker: thesis.ticker,
       company: thesis.company,
       direction: thesis.direction,
@@ -177,7 +177,7 @@ export async function runCycle(): Promise<CycleResult> {
       entry_at: at,
       posted_message_id: messageId,
     })
-    repo.touchCooldown(thesis.ticker, at)
+    await repo.touchCooldown(thesis.ticker, at)
     result.published++
     logger.info(
       { ticker: thesis.ticker, conviction: thesis.conviction, messageId },
@@ -186,7 +186,7 @@ export async function runCycle(): Promise<CycleResult> {
   }
 
   const cutoff = new Date(now.getTime() - SEEN_RETENTION_DAYS * 86_400_000).toISOString()
-  const pruned = repo.pruneSeenEvents(cutoff)
+  const pruned = await repo.pruneSeenEvents(cutoff)
   if (pruned > 0) logger.debug({ pruned }, 'pruned old seen_events')
 
   logger.info(result, 'cycle complete')
