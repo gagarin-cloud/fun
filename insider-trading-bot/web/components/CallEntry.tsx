@@ -3,7 +3,7 @@ import Link from 'next/link'
 import { Chain } from './Chain'
 import { Conviction } from './Conviction'
 import { Dte } from './Dte'
-import { ago, fmtTerm, hostOf } from '@/lib/format'
+import { ago, fmtTerm, hostOf, safeUrl } from '@/lib/format'
 import type { CallWithEvent } from '@/lib/queries'
 
 /**
@@ -90,8 +90,8 @@ export function CallEntry({ call }: { call: CallWithEvent }) {
  * not worth a row saying it is absent.
  */
 function SourceLine({ call }: { call: CallWithEvent }) {
-  const host = hostOf(call.url ?? call.source_url)
-  const url = call.url ?? call.source_url
+  const url = safeUrl(call.url ?? call.source_url)
+  const host = hostOf(url)
 
   return (
     <figure className="source">

@@ -39,6 +39,43 @@ inside a Docker build, on a machine with no database.
 There is no login and no authorisation of any kind. The same calls are already
 public in the Telegram channel, so a password here would protect nothing.
 
+## What it exposes, and what it does not
+
+Everything here is public on purpose, so the question worth answering is what is
+*not*.
+
+- **No credentials, in any form.** The service is deployed with `DB_URL`, `TZ`
+  and `NODE_ENV` and nothing else — no OpenAI, Telegram, Finnhub or Marketaux
+  key ever reaches the one container that answers requests from the internet.
+  `lib/db.ts` and `lib/queries.ts` import `server-only`, so importing them from a
+  Client Component is a build error rather than a connection string in a browser
+  bundle.
+- **No prices.** `calls.entry_price` and `calls.resolved_price` are recorded by
+  the bot for scoring and are never selected. The queries name their columns.
+- **No error internals.** A database that cannot be reached renders a written
+  explanation; the driver's message is logged for `gg logs` and never sent to the
+  browser.
+- **No input surface.** The site reads no query parameters, cookies or headers,
+  and has no forms. Every SQL value is a bound parameter.
+- **Hostile links are not linked.** Article URLs come out of RSS, Marketaux and
+  EDGAR and are stored verbatim, and React does not block `javascript:` in an
+  `href`. `safeUrl()` in `lib/format.ts` allows `http:` and `https:` only;
+  anything else renders as text. This is the defence — the CSP is not, because
+  Next's inline hydration script forces `'unsafe-inline'`, which also permits
+  `javascript:` URLs. `next.config.ts` says so where the header is set.
+
+Response headers set in `next.config.ts`: a CSP, `nosniff`, `X-Frame-Options:
+DENY` and `frame-ancestors 'none'`, `Referrer-Policy:
+strict-origin-when-cross-origin` (so a publisher's logs never learn which call
+sent the reader), a `Permissions-Policy` denying everything, and HSTS.
+
+One thing the site *will* show that you might not expect: a call the bot recorded
+but never announced. The Telegram post is a notification of a decision, not the
+decision itself, so a call is written whether or not the message lands — after a
+Telegram outage, or under `DRY_RUN=true`, positions appear here with no
+`posted_message_id`. That is the intended behaviour, not a leak, but it means
+`DRY_RUN` is not a way to run a cycle that changes nothing.
+
 ## Running it
 
 Needs a Postgres with the bot's schema. From the project root,

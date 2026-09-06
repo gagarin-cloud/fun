@@ -144,8 +144,14 @@ The six above are required. Every other key in `.env.example` has a default in
 `src/config.ts` and can be left alone. Two worth knowing:
 
 - `DRY_RUN="true"` runs the full pipeline — real news, real LLM calls, real
-  spend — but logs the messages instead of sending them. Good for a first
-  deploy. It also skips the Telegram check, so it will not catch a bad token.
+  spend — but logs the channel messages instead of sending them. Good for a
+  first deploy. It also skips the Telegram check, so it will not catch a bad
+  token.
+
+  It suppresses the **announcement, not the work**: calls are still gated,
+  recorded and scored, so a dry run still puts positions in the database and on
+  the public website with no `posted_message_id`. There is no mode that runs a
+  cycle and changes nothing.
 - `MIN_MARKET_CAP_USD` skips the expensive thesis stage on micro-caps before
   paying for it.
 

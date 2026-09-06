@@ -143,7 +143,9 @@ fi
 
 if [[ "$(env_value DRY_RUN)" == "true" ]]; then
   warn "DRY_RUN=true — the worker will run the full pipeline (and spend real"
-  warn "OpenAI tokens) but log messages instead of posting them."
+  warn "OpenAI tokens) but log messages instead of posting them. It suppresses"
+  warn "the announcement, not the work: calls are still recorded, so they still"
+  warn "appear on the website."
 fi
 
 # ------------------------------------------- build the environment gg will send

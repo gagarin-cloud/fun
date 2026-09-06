@@ -6,7 +6,7 @@ import { Chain } from '@/components/Chain'
 import { Conviction } from '@/components/Conviction'
 import { Dte } from '@/components/Dte'
 import { StateNote } from '@/components/StateNote'
-import { ago, catalystWindow, fmtPct, fmtTerm, hostOf } from '@/lib/format'
+import { ago, catalystWindow, fmtPct, fmtTerm, hostOf, safeUrl } from '@/lib/format'
 import { getCall, getTickerHistory, type Call, type CallWithEvent } from '@/lib/queries'
 import { read } from '@/lib/read'
 
@@ -141,7 +141,7 @@ export default async function CallPage({ params }: Params) {
 function TheNews({ call }: { call: CallWithEvent }) {
   if (!call.headline && !call.source_url) return null
 
-  const url = call.source_url ?? call.url
+  const url = safeUrl(call.source_url ?? call.url)
   const host = hostOf(url)
 
   return (

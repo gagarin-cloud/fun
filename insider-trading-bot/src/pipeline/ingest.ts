@@ -30,7 +30,10 @@ export interface CycleResult {
   newEvents: number
   passedTriage: number
   analysed: number
-  published: number
+  /** Calls written to the database. This is the number that means anything. */
+  recorded: number
+  /** How many of those also reached the Telegram channel. Lower after an outage. */
+  announced: number
 }
 
 /**
@@ -52,7 +55,8 @@ export async function runCycle(): Promise<CycleResult> {
     newEvents: 0,
     passedTriage: 0,
     analysed: 0,
-    published: 0,
+    recorded: 0,
+    announced: 0,
   }
 
   const events = await fetchAllEvents()
@@ -157,11 +161,18 @@ export async function runCycle(): Promise<CycleResult> {
     // Snapshot the price for scoring only — it is deliberately not published.
     const quote = await safeQuote(thesis.ticker)
 
-    const messageId = await postMessage(formatSuggestion(thesis, event.url))
-    if (messageId === null) continue
-
+    // The call is written first and unconditionally, and the channel post comes
+    // after it.
+    //
+    // The row is the record of a position the gate approved; the Telegram message
+    // only announces it. Sending first and inserting only on success — which is
+    // what this used to do — made a notification channel into the arbiter of
+    // whether the work happened at all: a Telegram outage, a message Telegram
+    // rejected as malformed, or a DRY_RUN cycle would each silently discard a
+    // call, and it would be missing from the scorecard and the website forever
+    // with nothing recording that it had ever existed.
     const at = new Date().toISOString()
-    await repo.insertCall({
+    const callId = await repo.insertCall({
       ticker: thesis.ticker,
       company: thesis.company,
       direction: thesis.direction,
@@ -175,13 +186,29 @@ export async function runCycle(): Promise<CycleResult> {
       source_url: event.url,
       entry_price: quote?.price ?? null,
       entry_at: at,
-      posted_message_id: messageId,
+      // Filled in below if the announcement lands; NULL is a call nobody was
+      // told about, not a call that did not happen.
+      posted_message_id: null,
     })
     await repo.touchCooldown(thesis.ticker, at)
-    result.published++
+    result.recorded++
+
+    const messageId = await postMessage(formatSuggestion(thesis, event.url))
+    if (messageId !== null) {
+      await repo.setPostedMessageId(callId, messageId)
+      result.announced++
+    } else {
+      // Worth a warning rather than a silent pass: the call stands and appears on
+      // the website, but nobody watching the channel saw it.
+      logger.warn(
+        { ticker: thesis.ticker, callId },
+        'call recorded but not announced — check DRY_RUN and the telegram credentials',
+      )
+    }
+
     logger.info(
-      { ticker: thesis.ticker, conviction: thesis.conviction, messageId },
-      'suggestion published',
+      { ticker: thesis.ticker, conviction: thesis.conviction, callId, messageId },
+      'call recorded',
     )
   }
 

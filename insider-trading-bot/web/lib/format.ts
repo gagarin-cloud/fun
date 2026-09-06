@@ -75,14 +75,33 @@ export function catalystWindow(
   return { state: 'past', days: -days }
 }
 
-/** `reuters.com` from a full URL; the bare string back if it will not parse. */
-export function hostOf(url: string | null): string {
-  if (!url) return ''
+/**
+ * A URL that is safe to put in an `href`, or null.
+ *
+ * Every link on this site points at a news article whose URL came out of an RSS
+ * feed, Marketaux or EDGAR and was stored verbatim — the bot never inspects the
+ * scheme. React does not block `javascript:` in an href, so a single malicious
+ * or compromised feed item would otherwise become a clickable script on a public
+ * page. An allowlist of two schemes closes that without touching the ingest
+ * path, and a link that fails it is rendered as plain text rather than dropped.
+ *
+ * `new URL` also rejects anything unparseable, which is the same answer we want.
+ */
+export function safeUrl(url: string | null): string | null {
+  if (!url) return null
   try {
-    return new URL(url).hostname.replace(/^www\./, '')
+    const parsed = new URL(url)
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.href : null
   } catch {
-    return url
+    return null
   }
+}
+
+/** `reuters.com` from a full URL, or an empty string if it is not one we'd link. */
+export function hostOf(url: string | null): string {
+  const safe = safeUrl(url)
+  if (!safe) return ''
+  return new URL(safe).hostname.replace(/^www\./, '')
 }
 
 /**

@@ -76,7 +76,16 @@ const schema = z.object({
 
   // --- misc ---
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error']).default('info'),
-  /** When true, run the full pipeline but log messages instead of sending. */
+  /**
+   * When true, run the full pipeline but log the channel messages instead of
+   * sending them.
+   *
+   * It suppresses the *announcement*, not the work. Calls are still gated,
+   * recorded and scored — the Telegram post only ever announced a decision that
+   * had already been made — so a dry run still adds positions to the database
+   * and to the public website, with `posted_message_id` left NULL. If you want
+   * a cycle that changes nothing, do not run one.
+   */
   DRY_RUN: z
     .enum(['true', 'false'])
     .default('false')

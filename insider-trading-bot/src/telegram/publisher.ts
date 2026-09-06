@@ -27,10 +27,11 @@ const MAX_ATTEMPTS = 4
 /**
  * Send one message, retrying on rate limits and transient failures.
  *
- * Returns the message id on success, or null if it could not be delivered. The
- * caller must only persist a call *after* a non-null return, so a Telegram outage
- * loses nothing: the event stays untriaged-as-posted and the suggestion is simply
- * not recorded.
+ * Returns the message id if Telegram accepted it, or null if nothing was
+ * delivered — a permanent error, exhausted retries, or DRY_RUN. Null is not a
+ * reason for a caller to abandon what it was doing: a channel post announces
+ * work that has already happened, and the work is recorded whether or not the
+ * announcement lands. See the publish loop in pipeline/ingest.ts.
  */
 export async function postMessage(
   html: string,
@@ -46,8 +47,10 @@ export async function postMessage(
   const { TELEGRAM_CHANNEL_ID, DRY_RUN } = loadConfig()
 
   if (DRY_RUN && !opts.force) {
+    // Null rather than a fake id: nothing was delivered, and the one caller that
+    // records the id should record that there is none.
     logger.info({ html }, 'DRY_RUN — message not sent')
-    return 0
+    return null
   }
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {

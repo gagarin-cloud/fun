@@ -168,6 +168,17 @@ export class Repo {
     return id
   }
 
+  /**
+   * Attach the channel post to a call that is already recorded.
+   *
+   * `posted_message_id` stays NULL when the announcement never landed — Telegram
+   * was down, the message was rejected, or the worker is in DRY_RUN. That is a
+   * missing notification, not a missing call.
+   */
+  async setPostedMessageId(id: number, messageId: number): Promise<void> {
+    await this.db.query(`UPDATE calls SET posted_message_id = $1 WHERE id = $2`, [messageId, id])
+  }
+
   /** Open calls whose catalyst window has passed — the scoring job's input. */
   async openCallsDueBy(isoDate: string): Promise<CallRow[]> {
     const { rows } = await this.db.query<CallRow>(
