@@ -22,6 +22,33 @@ services:
         max-file: "5"
     stop_grace_period: 20s
 
+  web:
+    build:
+      context: ./web
+    image: insider-web:latest
+    restart: unless-stopped
+    environment:
+      # The only variable the site needs. It is deliberately not given `env_file:
+      # .env` the way the bot is: this process reads three tables and holds no
+      # API key, and handing it OpenAI and Telegram credentials it never uses
+      # would put them in a container that answers requests from a browser.
+      DB_URL: postgres://insider:insider@db:5432/insider
+      TZ: UTC
+      NODE_ENV: production
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      # http://localhost:3000 — the open calls, the same rows the bot posts to
+      # Telegram.
+      - "3000:3000"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    stop_grace_period: 10s
+
   db:
     image: postgres:17-alpine
     restart: unless-stopped

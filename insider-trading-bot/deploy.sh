@@ -10,6 +10,8 @@
 #   ./deploy.sh                      deploy as project "insider-bot"
 #   PROJECT=my-bot ./deploy.sh       deploy under a different project name
 #   DRY_RUN_DEPLOY=1 ./deploy.sh     print what it would do, change nothing
+#   SKIP_WEB=1 ./deploy.sh           the worker only; do not ship the website
+#   WEB_PUBLIC=0 ./deploy.sh         ship the website but leave it private
 #
 set -euo pipefail
 
@@ -18,9 +20,18 @@ cd "$(dirname "$0")"
 PROJECT="${PROJECT:-insider-bot}"
 SERVICE="${SERVICE:-bot}"
 
-# The container listens on nothing — it only makes outbound calls. Gagarin wants
-# a port, so this is nominal: the service stays private, has no dependents, and
-# nothing ever connects to it. See "Why there is no gg domain add" in DEPLOY.md.
+# The website: the Next.js app in ./web, which renders the open calls straight
+# out of the same postgres. It is a second service rather than part of the worker
+# because the two have nothing in common at runtime — one sleeps for three hours
+# at a stretch and holds every API key, the other answers HTTP and holds none.
+WEB_SERVICE="${WEB_SERVICE:-web}"
+WEB_PORT="${WEB_PORT:-3000}"
+WEB_SIZE="${WEB_SIZE:-s}"
+
+# The port the worker's health endpoint listens on (src/health.ts). It serves
+# nothing else and stays private — gagarin opens a connection here to decide the
+# pod is ready, and nothing else ever does. The website is the service with a
+# public address; see "The website" in DEPLOY.md.
 PORT="${PORT:-8080}"
 
 # The postgres resource holding every seen event and scored call. Its name is
@@ -202,12 +213,10 @@ run gg resource add "$PROJECT/$DB_RESOURCE" postgres --size "$DB_SIZE" --storage
 service_row() {
   gg status "$PROJECT" 2>/dev/null \
     | sed -E 's/^[[:space:]]*[●○][[:space:]]*//' \
-    | awk -v s="$SERVICE" '$1 == s'
+    | awk -v s="$1" '$1 == s'
 }
 
-first_deploy=1
-if [[ -n "$(service_row || true)" ]]; then
-  first_deploy=0
+if [[ -n "$(service_row "$SERVICE" || true)" ]]; then
   say "Service '$PROJECT/$SERVICE' exists — shipping a new build over it"
 else
   say "Service '$PROJECT/$SERVICE' is new — creating it"
@@ -223,15 +232,21 @@ fi
 # resource via --deps, and a resource's injected variable outranks anything a
 # deploy sets. Passing one here would be ignored, so it is not passed.
 #
-# --deps is repeated on every ship, not just the first. It only ever adds, so it
-# is a no-op on a redeploy — but it means the very first deploy starts already
-# holding the credentials, and a later run repairs the edge if someone removed
-# it. An undeclared call to a database is dropped rather than refused, which
-# surfaces as a connection that hangs rather than one that fails.
+# The dependency edge is declared AFTER the ship, not with --deps on it.
+#
+# Measured 2026-09-06: `gg ship <project>/<service> --deps db` fails with
+# `[store_error] still in use` when the ship is *creating* the service. It
+# succeeds on a service that already exists, which is why this only bites a first
+# deploy — the worst possible time to discover it. Shipping bare and then calling
+# `gg deps add` works in both cases and is idempotent.
+#
+# The cost is a short window where a brand new service is running without the
+# database credentials. Both services here tolerate that: the worker retries with
+# backoff (src/db/index.ts) and the website renders "database unreachable" until
+# the edge lands, at which point gagarin re-renders the pod with DB_URL present.
 ship_args=(
   ship "$PROJECT/$SERVICE:$PORT"
   --size "$SIZE"
-  --deps "$DB_RESOURCE"
   --env-file "$RENDERED_ENV"
   --env "TZ=UTC"
   --env "NODE_ENV=production"
@@ -241,6 +256,53 @@ ship_args=(
 # node:22-bookworm-slim. Nothing is compiled — see the Dockerfile header.
 say "Building and shipping (~2 min; longer on the first run while the base image downloads)"
 run gg "${ship_args[@]}"
+
+# Only ever adds, so this is a no-op on a redeploy and repairs the edge if
+# someone removed it. An undeclared call to a database is dropped rather than
+# refused, which surfaces as a connection that hangs rather than one that fails —
+# so it is worth restating every run.
+say "Declaring that '$SERVICE' reaches '$DB_RESOURCE'"
+run gg deps add "$PROJECT/$SERVICE" "$DB_RESOURCE"
+
+# ------------------------------------------------------------------ the website
+
+# A second service out of ./web, reaching the same postgres.
+#
+# It gets no --env-file. The site reads three tables and calls nothing; giving it
+# the OpenAI and Telegram credentials would put every key this project holds
+# inside the one container that answers requests from the internet. DB_URL is not
+# passed either, for the same reason it is not passed to the worker: --deps is
+# what supplies it.
+if [[ -z "${SKIP_WEB:-}" ]]; then
+  [[ -f web/Dockerfile ]] || die "no web/Dockerfile; run this script from the project directory."
+
+  if [[ -n "$(service_row "$WEB_SERVICE" || true)" ]]; then
+    say "Service '$PROJECT/$WEB_SERVICE' exists — shipping a new build over it"
+  else
+    say "Service '$PROJECT/$WEB_SERVICE' is new — creating it"
+  fi
+
+  say "Building and shipping the website from ./web"
+  run gg ship "$PROJECT/$WEB_SERVICE:$WEB_PORT" \
+    --context ./web \
+    --size "$WEB_SIZE" \
+    --env "TZ=UTC" \
+    --env "NODE_ENV=production"
+
+  say "Declaring that '$WEB_SERVICE' reaches '$DB_RESOURCE'"
+  run gg deps add "$PROJECT/$WEB_SERVICE" "$DB_RESOURCE"
+
+  # This is the step that puts the calls on the internet, so it says so rather
+  # than happening quietly. The generated gagarin address is idempotent and
+  # instant — gagarin holds the wildcard record and certificate, so there is no
+  # DNS to wait for and nothing to coordinate.
+  if [[ "${WEB_PUBLIC:-1}" == "0" ]]; then
+    say "WEB_PUBLIC=0 — leaving '$PROJECT/$WEB_SERVICE' private (no address)"
+  else
+    say "Giving '$PROJECT/$WEB_SERVICE' a public address — the open calls become readable by anyone with the link"
+    run gg domain add "$PROJECT/$WEB_SERVICE"
+  fi
+fi
 
 if [[ -n "${DRY_RUN_DEPLOY:-}" ]]; then
   say "Dry run complete. Nothing was created, built or deployed."
@@ -260,17 +322,20 @@ echo
 # could not reach the database even if it did — and because an undeclared call is
 # dropped rather than refused, the symptom is a boot that hangs on connect for a
 # minute and then exits, not an error naming the cause.
-if gg deps ls "$PROJECT/$SERVICE" 2>/dev/null | grep -qw "$DB_RESOURCE"; then
-  say "Service reaches '$DB_RESOURCE' and holds its credentials"
-else
-  warn "$PROJECT/$SERVICE does not appear to reach '$DB_RESOURCE'."
-  warn "Fix it with:  gg deps add $PROJECT/$SERVICE $DB_RESOURCE"
-fi
+for svc in "$SERVICE" $([[ -z "${SKIP_WEB:-}" ]] && echo "$WEB_SERVICE"); do
+  if gg deps ls "$PROJECT/$svc" 2>/dev/null | grep -qw "$DB_RESOURCE"; then
+    say "Service '$svc' reaches '$DB_RESOURCE' and holds its credentials"
+  else
+    warn "$PROJECT/$svc does not appear to reach '$DB_RESOURCE'."
+    warn "Fix it with:  gg deps add $PROJECT/$svc $DB_RESOURCE"
+  fi
+done
 
 cat <<EOF
 $(say "Next steps")
 
-  gg logs $PROJECT/$SERVICE        watch it boot
+  gg logs $PROJECT/$SERVICE        watch the worker boot
+  gg domain ls $PROJECT            the website's address
 
 A healthy first boot logs 'storage check' (naming the database and its Postgres
 version), then 'telegram channel reachable', then 'insider bot starting'.
@@ -279,9 +344,13 @@ Then it goes quiet until the cron fires. At the default INGEST_CRON the first
 cycle runs at 7 minutes past the next 3-hour mark, so an idle log is expected
 rather than a hang.
 
-The service is private and has no public URL. That is deliberate: this worker
-only makes outbound calls and serves no HTTP. The database is private too and
-never gets one — to query it from your own machine:
+The worker is private and has no public URL. That is deliberate: it only makes
+outbound calls and serves no HTTP. The website is the service with an address —
+run 'gg domain ls $PROJECT' for it, or 'gg status $PROJECT', which hangs each
+address under its service.
+
+The database is private too and never gets one — to query it from your own
+machine:
 
   gg resource secrets $PROJECT/$DB_RESOURCE
 

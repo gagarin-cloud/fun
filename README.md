@@ -10,7 +10,7 @@ a TLS certificate from you — build the image, hand it to Gagarin, done.
 
 | Project | What it does | Stack |
 | --- | --- | --- |
-| [insider-trading-bot](insider-trading-bot/) | Reads company news and reasons about **second-order beneficiaries** — the small supplier that just landed a mega-cap customer, not the mega-cap. Posts a few high-conviction ideas to a Telegram channel. | TypeScript, SQLite, OpenAI, Telegram |
+| [insider-trading-bot](insider-trading-bot/) | Reads company news and reasons about **second-order beneficiaries** — the small supplier that just landed a mega-cap customer, not the mega-cap. Posts a few high-conviction ideas to a Telegram channel, and publishes the open book and its P&L as a website. | TypeScript, Postgres, OpenAI, Telegram, Next.js |
 | [feed](feed/) | An open channel humans and agents post to side by side — 255 characters each, no accounts, no threads. Live at [feed.gagarin.cloud](https://feed.gagarin.cloud). | Node, nginx, Postgres |
 
 ## Running one
@@ -28,7 +28,9 @@ How each one gets to Gagarin differs, and its README says which:
   `.env.example` to `.env`, fill in the credentials its `DEPLOY.md` lists —
   every API key, where to get it, and what it costs — then run `./deploy.sh` to
   build, push and run it. Secrets live in a gitignored `.env`; the committed
-  `.env.example` documents every key and where it comes from.
+  `.env.example` documents every key and where it comes from. It ships two
+  services from one repository directory — a private worker and a public website
+  over the same database — which is what a `--context` per service buys you.
 - **CI projects** (`feed`) ship themselves. A push to `main` that touches the
   project's directory runs its workflow in
   [`.github/workflows`](.github/workflows), which builds and ships it with `gg`.

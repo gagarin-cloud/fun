@@ -174,6 +174,19 @@ migrate`, `npm run score`, `npm run dev` — needs `DB_URL` to point at a Postgr
 that is actually running; `docker compose up -d db` gives you one on host port
 5433.
 
+The website is a separate npm project in `web/` and runs against the same
+database:
+
+```bash
+cd web && npm install
+DB_URL=postgres://insider:insider@localhost:5433/insider npm run dev
+```
+
+It will render an empty book until the bot has run a cycle, which is the correct
+answer rather than an error — see `web/README.md`. `docker compose up --build`
+brings up all three (database, worker, website) together, with the site on
+<http://localhost:3000>.
+
 ---
 
 ## 3. Install and authorise `gg`
@@ -217,18 +230,26 @@ token for you to copy anywhere.
 ```
 
 That is the whole thing. The script is idempotent — run it again to ship a new
-build. It creates the project if needed, builds the image, pushes it, and starts
-the worker with your environment. Read `deploy.sh` before running it; it is short
-and it explains each decision inline.
+build. It creates the project if needed, provisions the database, then builds and
+ships two services: the `bot` worker with your environment, and the `web`
+website, which it also puts on a public address. Read `deploy.sh` before running
+it; it is short and it explains each decision inline.
 
 Three things it does that matter, and that you would have to remember by hand:
 
-- **It provisions a `postgres` resource called `db`, and declares that the worker
-  reaches it.** That single `gg deps add` both opens the network route and hands
-  the service its credentials as `DB_URL` — which is exactly the variable
-  `src/config.ts` reads, so nothing has to be copied anywhere. The resource is
-  created *before* the service, so the worker never boots into a window where its
-  database does not exist.
+- **It provisions a `postgres` resource called `db`, and declares that each
+  service reaches it.** That single `gg deps add` both opens the network route
+  and hands the service its credentials as `DB_URL` — which is exactly the
+  variable `src/config.ts` reads, so nothing has to be copied anywhere. The
+  resource is created *before* the services, so neither boots into a window where
+  its database does not exist.
+
+  The declaration is a separate call rather than `--deps` on the ship, and that
+  is deliberate: measured 2026-09-06, `gg ship --deps db` fails with
+  `[store_error] still in use` when the ship is *creating* the service. It works
+  on a service that already exists, so the bug only bites a first deploy. Both
+  services tolerate the short window before the edge lands — the worker retries
+  with backoff, and the website says so on the page.
 - **It strips `DB_URL` out of what it sends.** Your local `.env` points at a
   Postgres on your own machine, which the cluster cannot reach. It would be
   ignored anyway — a resource's injected variable outranks anything a deploy
@@ -243,15 +264,19 @@ Three things it does that matter, and that you would have to remember by hand:
 
 ### What this costs
 
-The deploy creates **two** billable things: the worker and the Postgres, both at
-size `s`. Check the current rate with `gg status insider-bot`, which prints the
-day's accrued cost at the bottom of the table. The database is the one addition
-over the SQLite version, which stored everything on a volume attached to the
-worker.
+The deploy creates **three** billable things: the worker, the website and the
+Postgres, all at size `s`. Check the current rate with `gg status insider-bot`,
+which prints the day's accrued cost at the bottom of the table.
 
 `DB_SIZE=m ./deploy.sh` moves the database up if you ever need it; you almost
-certainly will not, since it serves exactly one client that wakes every three
-hours.
+certainly will not, since it serves one client that wakes every three hours and
+one that renders a page.
+
+`WEB_SIZE=m ./deploy.sh` is the fix if the website is ever OOM-killed — a
+server-rendered Next.js app is the workload most likely to want it. You will not
+have to guess: `gg status` reports the kill and names the size to move to. Start
+at `s`; three pages of server-rendered HTML do not need more, and
+`SKIP_WEB=1 ./deploy.sh` removes the cost entirely.
 
 ### On build time
 
@@ -269,16 +294,49 @@ builder and runtime stages onto the same base image and made a missing prebuild
 fail as a mysteriously slow build rather than an error. None of that applies any
 more.
 
-### Why there is no `gg domain add`
+### The website
 
-Because nothing should be able to open this. The worker makes only outbound
-calls, so a public address would expose a port nothing is listening on and buy
-you nothing. The service stays private. If you ever add an HTTP health endpoint,
-that is the moment to reconsider — not now.
+`./deploy.sh` ships a second service, `web`, out of the `web/` directory: a
+Next.js app that renders the open book straight out of the same Postgres. It
+reaches `db` through the same `gg deps` edge the worker uses, and reads it
+server-side — no API sits between them, and no connection string reaches a
+browser.
 
-The port in the deploy command is nominal for the same reason: Gagarin wants a
-port, this container listens on none, and since the service is private and has no
-dependents, nothing ever connects to it.
+**This is the one thing in the project that goes on the internet**, and the
+script says so as it happens. `gg domain add` gives it a generated
+`*.gagarin.cloud` address, which is instant and needs no DNS from you — gagarin
+holds the wildcard record and the certificate. There is no login, by design: the
+same calls are already public in the Telegram channel, so a password on the
+website would protect nothing. Anyone with the link reads the book.
+
+If you would rather it stayed private:
+
+```bash
+WEB_PUBLIC=0 ./deploy.sh    # ship it, but give it no address
+SKIP_WEB=1 ./deploy.sh      # do not ship it at all
+```
+
+Two things the site deliberately does **not** get:
+
+- **Your API keys.** The worker is passed the whole rendered `.env`; the website
+  is passed `TZ` and `NODE_ENV` and nothing else. It only ever runs `SELECT`s, so
+  handing the one container that answers requests from the internet your OpenAI
+  and Telegram credentials would be a cost with no benefit.
+- **Write access to the schema.** The bot owns the tables and applies them at
+  boot. The site never migrates; a missing table renders as an empty state rather
+  than as something to repair.
+
+`entry_price` and `resolved_price` are in the `calls` table and are never
+rendered — the queries in `web/lib/queries.ts` name their columns explicitly, so
+adding a column to the schema does not quietly put it on the internet.
+
+### Why the worker has no address
+
+The worker makes only outbound calls. It listens on 8080 for one thing — a
+liveness endpoint (`src/health.ts`), because gagarin decides a service is ready
+by opening a connection to the port the deploy declared, and a container
+listening nowhere never becomes ready. Nothing else connects to it, and it never
+gets a domain.
 
 ---
 
@@ -293,7 +351,8 @@ gg status insider-bot
 ```
 
 `●` means the cluster agrees with what was asked for. `○` means it does not, and
-the reason is printed beside it. Then read the logs:
+the reason is printed beside it. The website's address hangs under its row; `gg
+domain ls insider-bot` prints it on its own. Then read the logs:
 
 ```bash
 gg logs insider-bot/bot

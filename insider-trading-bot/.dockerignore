@@ -7,3 +7,6 @@ dist
 .git
 .DS_Store
 npm-debug.log*
+
+# The website is a separate image with its own context; the bot needs none of it.
+web

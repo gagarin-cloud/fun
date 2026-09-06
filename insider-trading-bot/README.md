@@ -13,6 +13,10 @@ asymmetry and rejects the ~95% of headlines that are noise.
 The bot is **post-only**: it never reads updates, has no webhook, and handles no
 commands.
 
+A second service, [`web/`](web/), renders the same calls as a public website —
+the open book, the reasoning behind each position, and the settled P&L. It reads
+the bot's Postgres directly from its server components and writes nothing.
+
 ## How a cycle works
 
 ```
@@ -107,7 +111,28 @@ Ticker, direction, thesis, the causal chain, catalyst + date, main risk,
 conviction, source link, disclaimer. **No entry, target or stop levels.**
 
 An entry price *is* recorded silently at post time, because scoring is impossible
-without it — but nothing in the channel states a level.
+without it — but nothing in the channel states a level. The website does not show
+it either: `web/lib/queries.ts` names the columns it selects, so a price the bot
+keeps for its own scoring cannot leak onto a public page by being added to the
+schema.
+
+## The website
+
+`web/` is a Next.js app over the same database. Every page is server-rendered per
+request against Postgres — there is no API in between, and the connection string
+never leaves the server.
+
+```bash
+cd web && npm install
+DB_URL=postgres://insider:insider@localhost:5433/insider npm run dev
+```
+
+It is read-only and has no login, deliberately: these calls are already public in
+the Telegram channel, so a password on the website would protect nothing. It
+holds no API keys either — a deploy passes it `DB_URL` and nothing else.
+
+See [web/README.md](web/README.md) for how it handles a database that is empty or
+unreachable, both of which are ordinary states rather than faults.
 
 ## Setup
 
@@ -117,6 +142,9 @@ npm install
 docker compose up -d db # a Postgres to develop against, on host port 5433
 npm run migrate         # apply the schema
 ```
+
+`web/` has its own `package.json` and its own lockfile; `cd web && npm install`
+if you want to work on the site.
 
 The seven required values are the six credentials at the top of `.env.example`
 plus `DB_URL`; everything below them has a default in `src/config.ts`. Three
@@ -164,6 +192,10 @@ due calls silently; drop the flag to post.
 get each of the five API keys, how to wire up the Telegram bot, and deploying to
 Gagarin Cloud with `./deploy.sh`.
 
+`./deploy.sh` ships **two** services and one database: the private `bot` worker,
+and the `web` website, which it puts on a public gagarin address. `WEB_PUBLIC=0`
+keeps the site private; `SKIP_WEB=1` does not ship it at all.
+
 Locally, or on any Docker host:
 
 ```bash
@@ -171,7 +203,9 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-Compose brings up a Postgres 17 alongside the worker and points `DB_URL` at it.
+Compose brings up a Postgres 17 alongside the worker and the website, and points
+`DB_URL` at it for both. The site lands on <http://localhost:3000>.
+
 Port 5432 is published on the host as **5433**, to stay clear of a Postgres you
 may already be running, so you can inspect calls and tune prompts with:
 

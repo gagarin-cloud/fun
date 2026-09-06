@@ -1,0 +1,875 @@
+/*
+ * A trading terminal.
+ *
+ * The lineage is the amber-phosphor market terminal — black ground, amber
+ * chrome, monospaced fields, the book on a tape across the top — because that is
+ * the native vernacular of what this thing produces: positions, conviction, a
+ * catalyst date and a P&L. It commits to dark and has no light mode, for the
+ * same reason a dealing screen does not.
+ *
+ * Three hues and nothing else. Amber is the terminal itself: rules, labels,
+ * chrome. Teal-green and pink-red are gain and loss, and are never used for
+ * anything that is not a direction or a return. The green/red pair is the finance
+ * convention, but it is stepped off the usual pure hues so that deuteranopic
+ * readers can still separate them (ΔE 10.9, validated) — and every bar is
+ * accompanied by its signed number in text, so the colour never carries the
+ * meaning alone.
+ */
+
+:root {
+  color-scheme: dark;
+
+  --void: #000000;
+  --panel: #0a0d12;
+  --panel-hi: #10151c;
+  --rule: #1b232e;
+  --rule-hot: #2b3543;
+
+  --amber: #ffa724;
+  --amber-dim: #8a5e14;
+
+  --text: #dee4ec;
+  --muted: #6c7a8b;
+
+  --up: #00e0a4;
+  --down: #ff5470;
+
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --display: "Archivo", var(--sans);
+
+  --step--2: 0.6875rem;
+  --step--1: 0.75rem;
+  --step-0: 0.875rem;
+  --step-1: 1rem;
+  --step-2: 1.25rem;
+  --step-3: 1.75rem;
+  --step-4: 2.75rem;
+
+  --measure: 40rem;
+  --page: 68rem;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--void);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: var(--step-0);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--amber);
+  color: var(--void);
+}
+
+a {
+  color: var(--amber);
+  text-decoration: none;
+  border-bottom: 1px solid var(--amber-dim);
+}
+
+a:hover {
+  border-bottom-color: var(--amber);
+}
+
+:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+
+/* The field label idiom: small, mono, uppercase, dim. It is the terminal's own
+   way of naming a field, and the reason labels are set this way everywhere. */
+.field {
+  font-family: var(--mono);
+  font-size: var(--step--1);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------------- shell */
+
+.shell {
+  max-width: var(--page);
+  margin: 0 auto;
+  padding: 0 1rem;
+}
+
+/* ------------------------------------------------------------------ header */
+
+.term-head {
+  border-bottom: 1px solid var(--rule-hot);
+  background: var(--panel);
+}
+
+.term-head__bar {
+  max-width: var(--page);
+  margin: 0 auto;
+  padding: 0.6rem 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.25rem;
+}
+
+.term-head__mark {
+  margin: 0;
+  font-family: var(--display);
+  font-size: var(--step-1);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--amber);
+  line-height: 1;
+}
+
+.term-head__mark a {
+  color: inherit;
+  border-bottom: 0;
+}
+
+.term-head__status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  font-size: var(--step--1);
+  color: var(--muted);
+}
+
+.term-head__status b {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.term-head__status .up {
+  color: var(--up);
+}
+.term-head__status .down {
+  color: var(--down);
+}
+
+.term-head__spacer {
+  flex: 1 1 1rem;
+}
+
+.tabs {
+  display: flex;
+  gap: 0;
+}
+
+.tabs a {
+  padding: 0.3rem 0.75rem;
+  border: 1px solid var(--rule-hot);
+  border-right-width: 0;
+  color: var(--muted);
+  font-size: var(--step--1);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tabs a:last-child {
+  border-right-width: 1px;
+}
+
+.tabs a:hover {
+  color: var(--text);
+  background: var(--panel-hi);
+}
+
+.tabs a[aria-current="page"] {
+  background: var(--amber);
+  border-color: var(--amber);
+  color: var(--void);
+  font-weight: 600;
+}
+
+/* -------------------------------------------------------------------- tape */
+
+/*
+ * The book, running. It is the one piece of unprompted motion on the site and it
+ * earns its place: a tape of the open positions is what this product would be if
+ * it were a physical instrument, and it is the only element that shows the whole
+ * book at once. It holds still for anyone who asked for less motion.
+ */
+.tape {
+  overflow: hidden;
+  border-bottom: 1px solid var(--rule);
+  background: var(--void);
+  padding: 0.4rem 0;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 3rem, #000 calc(100% - 3rem), transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 3rem, #000 calc(100% - 3rem), transparent);
+}
+
+.tape__track {
+  display: inline-flex;
+  white-space: nowrap;
+  will-change: transform;
+  animation-name: tape-scroll;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  /* Both set inline: the component decides how many copies of the book it takes
+     to outrun the widest plausible viewport, and how long one copy should take
+     at a constant speed. See Terminal.tsx. */
+}
+
+@keyframes tape-scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    /* Exactly one copy's width, so the loop lands on the next copy with no seam
+       and no gap. `--tape-copies` is how many copies were rendered. */
+    transform: translateX(calc(-100% / var(--tape-copies, 2)));
+  }
+}
+
+.tape__item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0 1.25rem;
+  border-right: 1px solid var(--rule);
+  font-size: var(--step--1);
+  letter-spacing: 0.04em;
+}
+
+.tape__ticker {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tape__conv {
+  color: var(--muted);
+}
+
+.tape__empty {
+  padding: 0 1rem;
+  font-size: var(--step--1);
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.up {
+  color: var(--up);
+}
+.down {
+  color: var(--down);
+}
+.flat {
+  color: var(--muted);
+}
+
+main {
+  padding: 1.5rem 0 3rem;
+}
+
+/* --------------------------------------------------------------- stat row */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 1px;
+  margin: 0 0 1.5rem;
+  padding: 0;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+}
+
+.stats > div {
+  background: var(--panel);
+  padding: 0.75rem 0.9rem 0.85rem;
+}
+
+.stats dt {
+  margin: 0 0 0.3rem;
+}
+
+.stats dd {
+  margin: 0;
+  font-family: var(--display);
+  font-size: var(--step-3);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.intake {
+  margin: -0.75rem 0 1.5rem;
+  max-width: var(--measure);
+  font-family: var(--sans);
+  font-size: var(--step-0);
+  color: var(--muted);
+}
+
+/* ----------------------------------------------------------- section head */
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0 0 0.75rem;
+}
+
+.section-head h2 {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--step--1);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--amber);
+}
+
+/* ---------------------------------------------------------------- ledger */
+
+.ledger {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 1rem;
+}
+
+/* One open position. Hard corners, one hairline, a header band — a panel on a
+   dealing screen, not a card. */
+.pos {
+  border: 1px solid var(--rule-hot);
+  background: var(--panel);
+}
+
+.pos__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.9rem;
+  padding: 0.55rem 0.9rem;
+  background: var(--panel-hi);
+  border-bottom: 1px solid var(--rule-hot);
+}
+
+.pos__ticker {
+  font-family: var(--display);
+  font-size: var(--step-2);
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  line-height: 1;
+}
+
+.pos__ticker a {
+  color: var(--text);
+  border-bottom: 0;
+}
+
+.pos__ticker a:hover {
+  color: var(--amber);
+}
+
+.pos__side {
+  padding: 0.1rem 0.4rem;
+  font-size: var(--step--2);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border: 1px solid currentColor;
+}
+
+.pos__company {
+  font-family: var(--sans);
+  font-size: var(--step-0);
+  color: var(--muted);
+}
+
+.pos__spacer {
+  flex: 1 1 1rem;
+}
+
+.pos__body {
+  padding: 0.9rem;
+  display: grid;
+  gap: 0.9rem;
+}
+
+/* --------------------------------------------------------------- rowgrid */
+
+/*
+ * The field grid every panel is built from: a fixed label gutter on the left,
+ * content on the right. It is what makes four unrelated facts scan as one
+ * record instead of four paragraphs.
+ */
+.rows {
+  display: grid;
+  grid-template-columns: 6rem 1fr;
+  gap: 0.55rem 1rem;
+  margin: 0;
+  align-items: start;
+}
+
+.rows dt {
+  margin: 0;
+  padding-top: 0.15em;
+}
+
+/*
+ * Prose is prose even on a terminal. The field labels, dates and countdowns are
+ * mono because they are data; a sentence the model wrote is set in the sans of
+ * the same superfamily, which reads at length where a monospace does not.
+ */
+.rows dd {
+  margin: 0;
+  min-width: 0;
+  max-width: var(--measure);
+  font-family: var(--sans);
+  line-height: 1.55;
+}
+
+.rows dd.prose {
+  font-size: var(--step-1);
+  line-height: 1.6;
+}
+
+/* Back to mono, for the values that are data rather than sentences. */
+.mono {
+  font-family: var(--mono);
+}
+
+/* ---------------------------------------------------------------- gauge */
+
+.gauge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  white-space: nowrap;
+  font-size: var(--step--1);
+}
+
+.gauge__blocks {
+  letter-spacing: 0.05em;
+  color: var(--amber);
+}
+
+.gauge__blocks .off {
+  color: var(--rule-hot);
+}
+
+.gauge__value {
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------- chain */
+
+/*
+ * The one thing this bot does that a headline reader does not: walk from the
+ * story everyone read to the company nobody connected to it. Each step drops a
+ * rung, and only the last — the name it actually took a position in — is lit.
+ */
+.chain {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--sans);
+  font-size: var(--step-1);
+  line-height: 1.5;
+  max-width: var(--measure);
+}
+
+.chain__link {
+  display: flex;
+  gap: 0.5rem;
+  color: var(--muted);
+}
+
+.chain__link:last-child {
+  color: var(--amber);
+  font-family: var(--display);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.chain__rule {
+  flex: none;
+  color: var(--rule-hot);
+  font-family: var(--mono);
+}
+
+.chain--prose {
+  display: block;
+  color: var(--muted);
+}
+
+/* --------------------------------------------------------------- source */
+
+.source {
+  margin: 0;
+  min-width: 0;
+}
+
+.source__headline {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: var(--step-0);
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.source__meta {
+  margin: 0.25rem 0 0;
+  font-size: var(--step--1);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.source__meta a {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* --------------------------------------------------------------- countdown */
+
+/* Days to the catalyst, in the desk's own shorthand: D-59 ahead, D+3 past. */
+.dte {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.dte--past {
+  color: var(--down);
+}
+
+.dte--near {
+  color: var(--amber);
+}
+
+.dte--far {
+  color: var(--muted);
+}
+
+.pos__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.4rem 1rem;
+  padding: 0.5rem 0.9rem;
+  border-top: 1px solid var(--rule);
+  font-size: var(--step--1);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* --------------------------------------------------------------- blotter */
+
+.blotter-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--rule-hot);
+}
+
+.blotter {
+  width: 100%;
+  min-width: 44rem;
+  border-collapse: collapse;
+  font-size: var(--step-0);
+}
+
+.blotter th {
+  position: sticky;
+  top: 0;
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  background: var(--panel-hi);
+  border-bottom: 1px solid var(--rule-hot);
+  font-size: var(--step--1);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.blotter td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.blotter tbody tr:hover td {
+  background: var(--panel);
+}
+
+.blotter tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.blotter .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.blotter__ticker {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: var(--step-1);
+  color: var(--text);
+  border-bottom: 0;
+}
+
+.blotter__ticker:hover {
+  color: var(--amber);
+}
+
+.blotter__company {
+  font-family: var(--sans);
+  font-size: var(--step--1);
+  color: var(--muted);
+  white-space: normal;
+}
+
+/* ------------------------------------------------------------- P&L bar */
+
+/*
+ * A diverging bar per row: gain right of the centre line, loss left, on a shared
+ * scale so the rows compare against each other rather than each against itself.
+ * The signed number sits beside it in text, so the bar adds magnitude to a fact
+ * the reader already has rather than being the only way to get it.
+ */
+.pnl {
+  /* A bare <span> is inline, and width/height do not apply to an inline box —
+     without this the whole column renders empty. */
+  display: inline-block;
+  position: relative;
+  width: 7rem;
+  height: 0.75rem;
+  vertical-align: middle;
+}
+
+.pnl__axis {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--rule-hot);
+}
+
+.pnl__fill {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 1px;
+}
+
+/* ---------------------------------------------------------------- memo */
+
+.memo__crumb {
+  margin: 0 0 1rem;
+  font-size: var(--step--1);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.memo__head {
+  border: 1px solid var(--rule-hot);
+  background: var(--panel-hi);
+  padding: 1rem;
+  margin-bottom: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+}
+
+.memo__ticker {
+  margin: 0;
+  font-family: var(--display);
+  font-size: var(--step-4);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  line-height: 0.9;
+  color: var(--amber);
+}
+
+.memo__company {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: var(--step-1);
+  color: var(--muted);
+}
+
+.panel {
+  border: 1px solid var(--rule-hot);
+  background: var(--panel);
+  margin-bottom: 1rem;
+}
+
+.panel > h2 {
+  margin: 0;
+  padding: 0.45rem 0.9rem;
+  background: var(--panel-hi);
+  border-bottom: 1px solid var(--rule-hot);
+  font-family: var(--mono);
+  font-size: var(--step--1);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--amber);
+}
+
+.panel__body {
+  padding: 0.9rem;
+}
+
+.panel__body > p {
+  margin: 0 0 0.75rem;
+  font-family: var(--sans);
+  font-size: var(--step-1);
+  line-height: 1.6;
+  max-width: var(--measure);
+}
+
+.panel__body > p:last-child {
+  margin-bottom: 0;
+}
+
+/* ---------------------------------------------------------------- notes */
+
+.note {
+  border: 1px solid var(--amber-dim);
+  background: var(--panel);
+  padding: 1rem;
+  max-width: var(--measure);
+}
+
+.note h2 {
+  margin: 0 0 0.5rem;
+  font-family: var(--mono);
+  font-size: var(--step-0);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--amber);
+}
+
+.note p {
+  margin: 0 0 0.6rem;
+  font-family: var(--sans);
+  font-size: var(--step-0);
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.note p:last-child {
+  margin-bottom: 0;
+}
+
+.note code {
+  font-family: var(--mono);
+  color: var(--text);
+}
+
+/* --------------------------------------------------------------- footer */
+
+.footer {
+  border-top: 1px solid var(--rule);
+  padding: 1rem 0 2.5rem;
+  font-size: var(--step--1);
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.footer p {
+  margin: 0 0 0.5rem;
+  max-width: 46rem;
+  font-family: var(--sans);
+  font-size: var(--step-0);
+}
+
+/* The one thing on the page that has to be read even by someone skimming, so it
+   keeps the terminal's own voice while the sentence around it does not. */
+.footer strong {
+  font-family: var(--mono);
+  color: var(--down);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* ---------------------------------------------------------------- a11y */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tape {
+    overflow-x: auto;
+  }
+  .tape__track {
+    animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (max-width: 40rem) {
+  .rows {
+    grid-template-columns: 1fr;
+    gap: 0.15rem 0;
+  }
+  .rows dt {
+    padding-top: 0.5rem;
+  }
+  .rows dt:first-child {
+    padding-top: 0;
+  }
+  .memo__ticker {
+    font-size: var(--step-3);
+  }
+  .stats dd {
+    font-size: var(--step-2);
+  }
+}
+
+@media (max-width: 40rem) {
+  /* The status separators are there to hold four facts on one line. Once the bar
+     wraps they are just a pipe hanging off the end of a line. */
+  .term-head__status [aria-hidden] {
+    display: none;
+  }
+  .term-head__status {
+    gap: 0.35rem 1rem;
+  }
+}
