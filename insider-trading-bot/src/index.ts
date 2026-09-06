@@ -7,6 +7,7 @@ import { runCycle } from './pipeline/ingest.js'
 import { runScoring } from './pipeline/score.js'
 import { verifyChannel, postMessage } from './telegram/publisher.js'
 import { formatDeployNotice } from './telegram/format.js'
+import { startHealthServer } from './health.js'
 
 const config = loadConfig()
 
@@ -104,6 +105,14 @@ const scoreTask = cron.schedule(
 logger.info('schedules registered')
 
 /**
+ * Set as soon as a signal arrives, so the health endpoint can answer 503 for the
+ * few seconds between "stop sending me work" and the process actually exiting.
+ */
+let shuttingDown = false
+
+const healthServer = startHealthServer(() => !shuttingDown)
+
+/**
  * Announce the deploy in the channel. Sent regardless of DRY_RUN — an operational
  * heartbeat is exactly what you want visible when suggestions are suppressed, and
  * repeated announcements are how a crash-loop makes itself obvious without logs.
@@ -130,8 +139,6 @@ void postMessage(
  * drain the connection pool. Without the drain, `pool.end()` never runs and the
  * server is left to time out connections that nothing is coming back for.
  */
-let shuttingDown = false
-
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return
   shuttingDown = true
@@ -147,6 +154,11 @@ async function shutdown(signal: string): Promise<void> {
     // still get a clean DB close rather than being killed mid-checkpoint.
     await Promise.race([running, new Promise((r) => setTimeout(r, 8000))])
   }
+
+  // Stop accepting connections, but do not wait on the callback: an idle
+  // keep-alive from the platform's probe would hold close() open past the
+  // shutdown budget for no benefit.
+  healthServer.close()
 
   await closeDb()
   logger.info('shutdown complete')
