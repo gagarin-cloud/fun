@@ -1,0 +1,23 @@
+services:
+  mcp:
+    build:
+      context: .
+    image: telegram-mcp:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # The OAuth issuer. It must be the address clients actually reach, so it is
+      # set here for local runs rather than taken from a .env shared with a deploy.
+      PUBLIC_URL: http://localhost:8080
+      TZ: UTC
+      NODE_ENV: production
+    ports:
+      # http://localhost:8080 — /mcp for clients, /login for the sign-in page
+      # clients redirect to.
+      - "8080:8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    stop_grace_period: 10s

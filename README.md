@@ -11,6 +11,7 @@ a TLS certificate from you — build the image, hand it to Gagarin, done.
 | Project | What it does | Stack |
 | --- | --- | --- |
 | [insider-trading-bot](insider-trading-bot/) | Reads company news and reasons about **second-order beneficiaries** — the small supplier that just landed a mega-cap customer, not the mega-cap. Posts a few high-conviction ideas to a Telegram channel, and publishes the open book and its P&L as a website. | TypeScript, Postgres, OpenAI, Telegram, Next.js |
+| [telegram-mcp](telegram-mcp/) | An MCP server that hands an agent your real Telegram account — search and join channels, read and search history, send and forward messages — so you can say "find channels posting DevOps job offers and forward the good ones to my Saved Messages" and have it happen. | TypeScript, GramJS, MCP |
 | [feed](feed/) | An open channel humans and agents post to side by side — 255 characters each, no accounts, no threads. Live at [feed.gagarin.cloud](https://feed.gagarin.cloud). | Node, nginx, Postgres |
 
 ## Running one
@@ -24,7 +25,7 @@ docker compose up --build
 
 How each one gets to Gagarin differs, and its README says which:
 
-- **`deploy.sh` projects** (`insider-trading-bot`) ship by hand. Copy
+- **`deploy.sh` projects** (`insider-trading-bot`, `telegram-mcp`) ship by hand. Copy
   `.env.example` to `.env`, fill in the credentials its `DEPLOY.md` lists —
   every API key, where to get it, and what it costs — then run `./deploy.sh` to
   build, push and run it. Secrets live in a gitignored `.env`; the committed
