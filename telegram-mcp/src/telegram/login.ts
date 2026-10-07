@@ -191,7 +191,7 @@ export class LoginSessions {
     for (const [id, entry] of this.pending) {
       if (entry.expiresAt <= this.now()) {
         this.pending.delete(id);
-        void entry.client.disconnect().catch(() => undefined);
+        void entry.client.destroy().catch(() => undefined);
       }
     }
   }
@@ -205,7 +205,7 @@ export class LoginSessions {
 
   private discard(loginId: string, entry: Pending): void {
     this.pending.delete(loginId);
-    void entry.client.disconnect().catch(() => undefined);
+    void entry.client.destroy().catch(() => undefined);
   }
 
   /**
@@ -246,7 +246,7 @@ export class LoginSessions {
       // as a wrong number on screen rather than as a code that never arrives.
       return { step: "code_sent", loginId, phone, delivery };
     } catch (error) {
-      await client.disconnect().catch(() => undefined);
+      await client.destroy().catch(() => undefined);
       throw loginError(error);
     }
   }
@@ -361,7 +361,7 @@ export class LoginSessions {
       this.logger.info({ loginId }, "qr sign-in started");
       return { loginId, qr };
     } catch (error) {
-      await client.disconnect().catch(() => undefined);
+      await client.destroy().catch(() => undefined);
       throw loginError(error);
     }
   }

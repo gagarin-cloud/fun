@@ -70,7 +70,7 @@ describe("AccountPool", () => {
     advance(6 * 60_000);
     subject.evictIdle();
     expect(subject.size).toBe(0);
-    expect(made[0]!.disconnect).toHaveBeenCalled();
+    expect(made[0]!.destroy).toHaveBeenCalled();
   });
 
   it("evicts the least recently used account when it is full", async () => {
@@ -88,7 +88,7 @@ describe("AccountPool", () => {
     await subject.telegramFor("session-a").status();
     await subject.logout("session-a");
     expect(made[0]!.invoke.mock.lastCall?.[0]?.className).toBe("auth.LogOut");
-    expect(made[0]!.disconnect).toHaveBeenCalled();
+    expect(made[0]!.destroy).toHaveBeenCalled();
     expect(subject.size).toBe(0);
   });
 
@@ -107,6 +107,6 @@ describe("AccountPool", () => {
     await subject.telegramFor("b").status();
     await subject.shutdown();
     expect(subject.size).toBe(0);
-    for (const client of made) expect(client.disconnect).toHaveBeenCalled();
+    for (const client of made) expect(client.destroy).toHaveBeenCalled();
   });
 });

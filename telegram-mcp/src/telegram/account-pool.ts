@@ -144,7 +144,9 @@ export class AccountPool {
     const entry = this.entries.get(key);
     if (!entry) return;
     this.entries.delete(key);
-    await entry.client.disconnect().catch(() => undefined);
+    // destroy, not disconnect: GramJS's ping loop only stops on destroy, and a
+    // merely disconnected client keeps pinging forever, logging "Error: TIMEOUT".
+    await entry.client.destroy().catch(() => undefined);
     this.logger.info({ account: key, reason }, "telegram account released");
   }
 

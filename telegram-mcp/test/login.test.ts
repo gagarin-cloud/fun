@@ -145,7 +145,7 @@ describe("LoginSessions", () => {
       user: { id: "7", kind: "user", displayName: "Ada", firstName: "Ada", username: "ada", link: "https://t.me/ada" },
     });
     // The login's own connection is closed; the pool opens its own on first use.
-    expect(client.disconnect).toHaveBeenCalled();
+    expect(client.destroy).toHaveBeenCalled();
     expect(logins.size).toBe(0);
   });
 
@@ -162,7 +162,7 @@ describe("LoginSessions", () => {
     const rejecting = fakeTelegramClient({ rpcErrors: { "auth.SendCode": "PHONE_NUMBER_INVALID" } });
     const { logins } = subject(rejecting);
     await expect(logins.start("+1")).rejects.toThrow(/does not recognise that phone number/);
-    expect(rejecting.disconnect).toHaveBeenCalled();
+    expect(rejecting.destroy).toHaveBeenCalled();
     expect(logins.size).toBe(0);
   });
 
@@ -196,7 +196,7 @@ describe("LoginSessions", () => {
     now += 11 * 60_000;
     expect(logins.size).toBe(0);
     await expect(logins.submitCode(loginId, "12345")).rejects.toThrow(/expired/);
-    expect(client.disconnect).toHaveBeenCalled();
+    expect(client.destroy).toHaveBeenCalled();
   });
 
   it("refuses to hold more sign-ins than it was configured for", async () => {
@@ -375,6 +375,6 @@ describe("LoginSessions, signing in by QR", () => {
   it("reports Telegram refusing to hand out a code", async () => {
     const client = fakeTelegramClient({ rpcResults: { "auth.ExportLoginToken": { className: "auth.LoginTokenSuccess" } } });
     await expect(subject(client).logins.startQr()).rejects.toThrow(/did not hand out a login code/);
-    expect(client.disconnect).toHaveBeenCalled();
+    expect(client.destroy).toHaveBeenCalled();
   });
 });
