@@ -66,6 +66,9 @@ export function fakeTelegramClient(options: FakeClientOptions = {}) {
     disconnect: vi.fn().mockImplementation(async function (this: { connected: boolean }) {
       this.connected = false;
     }),
+    destroy: vi.fn().mockImplementation(async function (this: { connected: boolean }) {
+      this.connected = false;
+    }),
     isUserAuthorized: vi.fn().mockResolvedValue(true),
     invoke: answer,
     getMe: vi.fn().mockResolvedValue(ME),
